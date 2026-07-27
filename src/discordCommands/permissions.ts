@@ -1,28 +1,43 @@
-import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
+import { SlashCommandBuilder } from "discord.js";
+import type { ChatInputCommandInteraction } from "discord.js";
 import type { Types } from "mongoose";
 import type { CommandType } from "../types/DiscordCommandType";
 import type { GuildClass } from "../models/Guild";
 import { GuildModel } from "../models/Guild";
 import { PermissionGroupModel, createPermissionGroup } from "../models/PermissionGroup";
-import { PERMISSIONS, type PermissionId } from "../permissions/definitions";
+import { getDiscordActor } from "../permissions/discord";
+import {
+    canManageGuildPermissionGroups,
+    canManageTeamPermissionGroups,
+    resolvePermissionScopes,
+} from "../permissions/scopes";
+import { PERMISSIONS, grantablePermissions, type PermissionId } from "../permissions/definitions";
 
 const ENFORCED_PERMISSIONS = PERMISSIONS.filter(p => p.status === "enforced");
 
-/** Resolves the scope's teamId from an optional `team` option. null = guild-wide. */
-async function resolveScope(guild: GuildClass, teamName: string | null):
+const NOT_AUTHORIZED = "You aren't authorized to manage permission groups in that scope.";
+
+/**
+ * Resolves the scope's teamId from an optional `team` option (null = guild-wide) *and* authorizes
+ * the caller for it. The two are one step on purpose: every subcommand here acts on a scope, and
+ * splitting them is how a team-scoped caller would end up editing guild-wide groups.
+ */
+async function resolveScope(interaction: ChatInputCommandInteraction, guild: GuildClass, teamName: string | null):
     Promise<{ teamId: Types.ObjectId | null } | { error: string }> {
-    if (!teamName) return { teamId: null };
+    const actor = getDiscordActor(interaction);
+    if (!teamName) {
+        if (!(await canManageGuildPermissionGroups(guild.guildId, actor))) return { error: NOT_AUTHORIZED };
+        return { teamId: null };
+    }
     const team = await guild.findTeamByName(teamName);
     if (!team) return { error: "Can't find that team" };
+    if (!(await canManageTeamPermissionGroups(guild.guildId, actor, team))) return { error: NOT_AUTHORIZED };
     return { teamId: team._id };
 }
 
 export default {
     command: async (interaction) => {
         if (!interaction.guild) return;
-        if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-            return await interaction.reply({ content: "You need Manage Server permission to manage permission groups.", flags: ["Ephemeral"] });
-        }
         const guild = await GuildModel.findOne({ guildId: interaction.guild.id });
         if (!guild) return await interaction.reply({ content: "Can't find your guild in database!", flags: ["Ephemeral"] });
 
@@ -35,7 +50,7 @@ export default {
             if (subcommand === "create") {
                 const name = interaction.options.getString("name", true);
                 await interaction.deferReply({ flags: ["Ephemeral"] });
-                const scope = await resolveScope(guild, teamName);
+                const scope = await resolveScope(interaction, guild, teamName);
                 if ("error" in scope) return await interaction.editReply({ content: scope.error });
                 const existing = await PermissionGroupModel.findOne({ guildId: guild.guildId, name, teamId: scope.teamId });
                 if (existing) return await interaction.editReply({ content: "A permission group with that name already exists in this scope" });
@@ -48,7 +63,7 @@ export default {
             if (subcommand === "delete") {
                 const name = interaction.options.getString("name", true);
                 await interaction.deferReply({ flags: ["Ephemeral"] });
-                const scope = await resolveScope(guild, teamName);
+                const scope = await resolveScope(interaction, guild, teamName);
                 if ("error" in scope) return await interaction.editReply({ content: scope.error });
                 const permGroup = await PermissionGroupModel.findOne({ guildId: guild.guildId, name, teamId: scope.teamId });
                 if (!permGroup) return await interaction.editReply({ content: "Can't find that permission group" });
@@ -58,10 +73,13 @@ export default {
 
             if (subcommand === "list") {
                 await interaction.deferReply({ flags: ["Ephemeral"] });
-                const groups = await PermissionGroupModel.find({ guildId: guild.guildId });
+                // No `team` option to scope by, so filter to what this caller may manage instead of
+                // listing every group in the guild.
+                const scopes = await resolvePermissionScopes(guild, getDiscordActor(interaction));
+                if (!scopes.any) return await interaction.editReply({ content: NOT_AUTHORIZED });
+                const groups = (await PermissionGroupModel.find({ guildId: guild.guildId })).filter(g => scopes.canManage(g));
                 if (groups.length === 0) return await interaction.editReply({ content: "No permission groups yet." });
-                const teams = await guild.getTeams();
-                const teamNameById = new Map(teams.map(t => [t._id.toString(), t.name]));
+                const teamNameById = new Map(scopes.teams.map(t => [t._id.toString(), t.name]));
                 const lines = groups.map(g => {
                     const scope = g.teamId ? `team: ${teamNameById.get(g.teamId.toString()) ?? g.teamId}` : "guild-wide";
                     return `**${g.name}** (${scope}): ${g.permissions.join(", ") || "(no permissions)"} — ${g.members.length} member(s)`;
@@ -73,11 +91,18 @@ export default {
                 const name = interaction.options.getString("name", true);
                 const permission = interaction.options.getString("permission", true) as PermissionId;
                 await interaction.deferReply({ flags: ["Ephemeral"] });
-                const scope = await resolveScope(guild, teamName);
+                const scope = await resolveScope(interaction, guild, teamName);
                 if ("error" in scope) return await interaction.editReply({ content: scope.error });
                 const permGroup = await PermissionGroupModel.findOne({ guildId: guild.guildId, name, teamId: scope.teamId });
                 if (!permGroup) return await interaction.editReply({ content: "Can't find that permission group" });
                 if (subcommand === "add-permission") {
+                    // The choice list is static, so a guild-level permission can still be picked for a
+                    // team group here - reject it rather than storing a grant that never applies.
+                    if (!grantablePermissions(!!permGroup.teamId).some(p => p.id === permission)) {
+                        return await interaction.editReply({
+                            content: "That permission is guild-level, so it can only go in a guild-wide group.",
+                        });
+                    }
                     if (!permGroup.permissions.includes(permission)) permGroup.permissions.push(permission);
                 } else {
                     permGroup.permissions = permGroup.permissions.filter(p => p !== permission);
@@ -92,7 +117,7 @@ export default {
             const user = interaction.options.getUser("user", true);
             const teamName = interaction.options.getString("team", false);
             await interaction.deferReply({ flags: ["Ephemeral"] });
-            const scope = await resolveScope(guild, teamName);
+            const scope = await resolveScope(interaction, guild, teamName);
             if ("error" in scope) return await interaction.editReply({ content: scope.error });
             const permGroup = await PermissionGroupModel.findOne({ guildId: guild.guildId, name, teamId: scope.teamId });
             if (!permGroup) return await interaction.editReply({ content: "Can't find that permission group" });

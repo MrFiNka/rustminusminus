@@ -2,7 +2,9 @@ import { isValidObjectId } from "mongoose";
 import { GuildModel, type GuildClass } from "../../models/Guild";
 import { TeamModel, type TeamClass } from "../../models/Team";
 import { registry } from "../../modules/ModuleRegistry";
-import { isTeamMemberOrAdmin, requirePermission } from "../../permissions/web";
+import { PermissionGroupModel, type PermissionGroupClass } from "../../models/PermissionGroup";
+import { getWebActor, isTeamMemberOrAdmin, requirePermission } from "../../permissions/web";
+import { canManagePermissionGroup } from "../../permissions/scopes";
 import type { PermissionId } from "../../permissions/definitions";
 
 /**
@@ -33,6 +35,21 @@ export function fail(status: number, error: string) {
 
 export function ok<T>(data: T) {
     return { ok: true as const, data };
+}
+
+/**
+ * Loads a permission group and authorizes the session against *its own* scope: a guild-wide group
+ * needs guild-level rights, a team-scoped one only needs rights over its team. Every read and
+ * mutation of a group by id goes through this, so the web routes and the SSR loaders can't drift
+ * into disagreeing about who may touch which group.
+ */
+export async function resolveManageablePermissionGroup(cookieToken: string | undefined, guildId: string, groupId: string):
+    Promise<{ ok: true; data: PermissionGroupClass } | ReturnType<typeof fail>> {
+    const group = await PermissionGroupModel.findOne({ _id: groupId, guildId });
+    if (!group) return fail(404, "Permission group not found");
+    const actor = await getWebActor(cookieToken, guildId);
+    if (!(await canManagePermissionGroup(guildId, actor, group))) return fail(401, "Not authorized");
+    return ok(group);
 }
 
 async function resolveGuildAndTeam(guildId: string, teamId: string) {

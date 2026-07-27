@@ -9,7 +9,7 @@ import { getServerDetail } from "../../server/dataAccess/serverDetail";
 import { renameDevice, removeDevice } from "../../server/dataAccess/deviceActions";
 import { searchVending } from "../../server/dataAccess/vendingSearch";
 import { requireTeamModuleAccess } from "../../server/dataAccess/shared";
-import { requirePermission } from "../../permissions/web";
+import { getSessionDiscordId, requirePermission } from "../../permissions/web";
 import { sessionPlugin } from "./session";
 import { resolveAdminGuild, resolveGuildTeam, resolveMemberTeam } from "./shared";
 
@@ -32,7 +32,10 @@ export const teamsRoutes = new Elysia({ name: "teamsRoutes" })
         const name = (body as { name?: string }).name?.trim();
         if (!name) { set.status = 400; return { error: "Team name is required" }; }
         if (await guild.findTeamByName(name)) { set.status = 409; return { error: "A team with that name already exists" }; }
-        const created = await guild.createTeam(name);
+        // Same as /team create: whoever creates the team owns it, which is what lets them manage its
+        // permission groups without being a guild admin.
+        const ownerId = await getSessionDiscordId(cookieToken as string | undefined);
+        const created = await guild.createTeam(name, ownerId ?? undefined);
         if (!created) {
             set.status = 500;
             return { error: "Failed to create team — check the bot has Administrator permission in this server" };

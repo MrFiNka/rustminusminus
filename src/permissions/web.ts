@@ -6,15 +6,14 @@ import { TeamModel, type TeamClass } from "../models/Team";
 import { UserModel } from "../models/User";
 import { PermissionGroupModel } from "../models/PermissionGroup";
 import { resolveUserPermissions } from "./check";
+import { isBotOwner, type Actor } from "./scopes";
 import type { PermissionId } from "./definitions";
 
 /** True if the logged-in user is the bot owner (matched by OWNER_DISCORD_ID env var). */
 export async function requireBotOwner(cookieToken: string | undefined): Promise<boolean> {
-    const ownerId = Bun.env.OWNER_DISCORD_ID;
-    if (!ownerId || !cookieToken) return false;
+    if (!cookieToken) return false;
     const auth = await OauthModel.findOne({ cookieId: cookieToken });
-    if (!auth?.userId) return false;
-    return auth.userId.toString() === ownerId;
+    return isBotOwner(auth?.userId?.toString());
 }
 
 /** True if the logged-in user (by cookie) has Discord's MANAGE_GUILD permission on guildId. */
@@ -53,6 +52,15 @@ export async function getSessionDiscordId(cookieToken: string | undefined): Prom
     if (!cookieToken) return null;
     const auth = await OauthModel.findOne({ cookieId: cookieToken });
     return auth?.userId?.toString() ?? null;
+}
+
+/** The session user as an `Actor`, for the scope rules in permissions/scopes.ts. */
+export async function getWebActor(cookieToken: string | undefined, guildId: string): Promise<Actor> {
+    const [discordUserId, isGuildAdmin] = await Promise.all([
+        getSessionDiscordId(cookieToken),
+        requireGuildAdmin(cookieToken, guildId),
+    ]);
+    return { discordUserId, isGuildAdmin };
 }
 
 /** True if the session user is a guild admin, or a linked member of this specific team. */

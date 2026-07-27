@@ -10,6 +10,7 @@ import * as Teams from "./client/pages/Teams";
 import * as TeamDetail from "./client/pages/TeamDetail";
 import * as TeamModules from "./client/pages/TeamModules";
 import * as TeamSettings from "./client/pages/TeamSettings";
+import * as TeamPermissions from "./client/pages/TeamPermissions";
 import * as ServerDetail from "./client/pages/ServerDetail";
 import * as PermissionGroups from "./client/pages/PermissionGroups";
 import * as PermissionGroupDetail from "./client/pages/PermissionGroupDetail";
@@ -58,6 +59,10 @@ export const routeTree: RouteNode[] = [
                     { path: "teams/:teamId", Component: TeamDetail.Component, ErrorBoundary: TeamDetail.ErrorBoundary, loaderKey: "teamDetail" },
                     { path: "teams/:teamId/modules", Component: TeamModules.Component, ErrorBoundary: TeamModules.ErrorBoundary, loaderKey: "teamModules" },
                     { path: "teams/:teamId/settings", Component: TeamSettings.Component, ErrorBoundary: TeamSettings.ErrorBoundary, loaderKey: "teamSettings" },
+                    { path: "teams/:teamId/permissions", Component: TeamPermissions.Component, ErrorBoundary: TeamPermissions.ErrorBoundary, loaderKey: "teamPermissionGroups" },
+                    // Same page and loader as the guild-wide group detail below - it reads `teamId`
+                    // from the URL to pick its sub-nav and back link.
+                    { path: "teams/:teamId/permissions/:groupId", Component: PermissionGroupDetail.Component, ErrorBoundary: PermissionGroupDetail.ErrorBoundary, loaderKey: "permissionGroupDetail" },
                     { path: "teams/:teamId/servers/:serverId", Component: ServerDetail.Component, ErrorBoundary: ServerDetail.ErrorBoundary, loaderKey: "serverDetail" },
                     { path: "permissions", Component: PermissionGroups.Component, ErrorBoundary: PermissionGroups.ErrorBoundary, loaderKey: "permissionGroups" },
                     { path: "permissions/:groupId", Component: PermissionGroupDetail.Component, ErrorBoundary: PermissionGroupDetail.ErrorBoundary, loaderKey: "permissionGroupDetail" },

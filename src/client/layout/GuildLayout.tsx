@@ -4,6 +4,11 @@ import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 export interface GuildLayoutData {
     enabledModules: string[];
     isAdmin: boolean;
+    /** May manage guild-wide permission groups - shows the guild-level Permissions tab. */
+    canManageGuildPermissions: boolean;
+    /** Team ids whose own permission groups this user may manage - shows each team's Permissions
+     *  tab. Kept here rather than in the team loaders so one lookup serves every team page. */
+    manageablePermissionTeamIds: string[];
 }
 
 export async function loader({ params }: LoaderFunctionArgs): Promise<GuildLayoutData> {
@@ -13,6 +18,8 @@ export async function loader({ params }: LoaderFunctionArgs): Promise<GuildLayou
     return {
         enabledModules: Array.isArray(data?.enabledModules) ? data.enabledModules : [],
         isAdmin: !!data?.isAdmin,
+        canManageGuildPermissions: !!data?.canManageGuildPermissions,
+        manageablePermissionTeamIds: Array.isArray(data?.manageablePermissionTeamIds) ? data.manageablePermissionTeamIds : [],
     };
 }
 

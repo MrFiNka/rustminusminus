@@ -8,6 +8,7 @@ import * as Teams from "./pages/Teams";
 import * as TeamDetail from "./pages/TeamDetail";
 import * as TeamModules from "./pages/TeamModules";
 import * as TeamSettings from "./pages/TeamSettings";
+import * as TeamPermissions from "./pages/TeamPermissions";
 import * as ServerDetail from "./pages/ServerDetail";
 import * as PermissionGroups from "./pages/PermissionGroups";
 import * as PermissionGroupDetail from "./pages/PermissionGroupDetail";
@@ -22,6 +23,7 @@ const loaders: Partial<Record<string, LoaderFunction>> = {
     teamDetail: TeamDetail.loader,
     teamModules: TeamModules.loader,
     teamSettings: TeamSettings.loader,
+    teamPermissionGroups: TeamPermissions.loader,
     serverDetail: ServerDetail.loader,
     permissionGroups: PermissionGroups.loader,
     permissionGroupDetail: PermissionGroupDetail.loader,

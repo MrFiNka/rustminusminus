@@ -9,6 +9,8 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 export const GuildSubNav = ({ guildId }: { guildId: string }) => {
     const data = useRouteLoaderData("guild") as GuildLayoutData | undefined;
     const isAdmin = data?.isAdmin ?? false;
+    // Guild-wide groups only - a team's own groups live under that team's Permissions tab.
+    const canManagePermissions = data?.canManageGuildPermissions ?? false;
     const crossTeamChatEnabled = data?.enabledModules.includes("cross-team-chat") ?? false;
 
     return (
@@ -21,7 +23,7 @@ export const GuildSubNav = ({ guildId }: { guildId: string }) => {
             <NavLink to={`/guild/${guildId}/teams`} className={linkClass}>
                 Teams
             </NavLink>
-            {isAdmin && (
+            {canManagePermissions && (
                 <NavLink to={`/guild/${guildId}/permissions`} className={linkClass}>
                     Permissions
                 </NavLink>

@@ -1,5 +1,29 @@
-import type { EmbedBuilder, TextBasedChannel } from "discord.js";
+import { DiscordAPIError, RESTJSONErrorCodes, type EmbedBuilder, type TextBasedChannel } from "discord.js";
 import type { TrackedMessage } from "../models/Team";
+
+/** Editing failed because the message (or its channel) is gone for good - reposting is the only
+ *  way to recover. Anything else (rate limit, missing perms, network) is transient or a config
+ *  problem: reposting there would just add a duplicate alongside a message that still exists. */
+function isGone(err: unknown): boolean {
+    return err instanceof DiscordAPIError
+        && (err.code === RESTJSONErrorCodes.UnknownMessage || err.code === RESTJSONErrorCodes.UnknownChannel);
+}
+
+/**
+ * Replaces the tracked id for `key` in place.
+ *
+ * Uses splice/push rather than rebuilding the array (`messages.length = 0; messages.push(...)`),
+ * which is what this did before: Mongoose diffs that pattern as a bare `$push` of the new entry and
+ * never emits the removal, so the stale `{id,key}` survived in the database. The next event then
+ * found the *old* id first, failed to edit the deleted message, posted a new one, and pushed again -
+ * re-posting an embed on every single update instead of editing one in place, forever.
+ */
+function setTrackedId(messages: TrackedMessage[], key: string, id: string): void {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]!.key === key) messages.splice(i, 1);
+    }
+    messages.push({ id, key });
+}
 
 /**
  * Keeps one live-updating embed per `key` in `channel`: edits the previously-sent message for
@@ -22,16 +46,19 @@ export async function upsertTrackedEmbed(options: {
         try {
             await channel.messages.edit(existing.id, { embeds: [embed] });
             return;
-        } catch {
-            // message was deleted or otherwise unreachable - fall through and repost it below
+        } catch (err) {
+            // Only a genuinely-gone message justifies reposting (e.g. after /team reset recreated
+            // the channel). Bailing on anything else keeps a transient failure from posting a
+            // duplicate next to the message it failed to edit.
+            if (!isGone(err)) {
+                console.error(`Failed to edit tracked embed "${key}":`, err);
+                return;
+            }
         }
     }
 
     const sent = await channel.send({ embeds: [embed] });
-    const remaining = messages.filter(m => m.key !== key);
-    remaining.push({ id: sent.id, key });
-    messages.length = 0;
-    messages.push(...remaining);
+    setTrackedId(messages, key, sent.id);
     await persist();
 }
 
@@ -58,8 +85,9 @@ export async function removeTrackedEmbed(options: {
         }
     }
 
-    const remaining = messages.filter(m => m.key !== key);
-    messages.length = 0;
-    messages.push(...remaining);
+    // splice, not a rebuild - see setTrackedId for why the previous pattern didn't persist.
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]!.key === key) messages.splice(i, 1);
+    }
     await persist();
 }

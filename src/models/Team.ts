@@ -95,6 +95,10 @@ const TeamSchema = new Schema({
         type: Schema.Types.ObjectId,
         ref: "User"
     }],
+    // Discord user id of whoever owns this team - set to its creator by createTeam(), transferable
+    // with /team setowner. Optional: teams created before ownership existed have none, and those
+    // fall back to guild admins for anything an owner would otherwise be allowed to do.
+    ownerId: { type: String },
     servers: [ServerSchema],
     activeServerId: { type: String },
     activeCredentialUserId: { type: Schema.Types.ObjectId },
@@ -122,6 +126,7 @@ export class TeamClass extends Document<Types.ObjectId> {
         roleId: string;
     };
     users!: Types.ObjectId[];
+    ownerId?: string;
     servers!: {
         serverId: string;
         pairedItems: {
@@ -141,6 +146,19 @@ export class TeamClass extends Document<Types.ObjectId> {
         return await UserModel.find({
             _id: { $in: this.users }
         });
+    }
+
+    /** True if `discordUserId` owns this team. False for ownerless (pre-ownership) teams rather than
+     *  true-for-everyone, so those stay guild-admin-only instead of opening up. */
+    isOwnedBy(discordUserId: string | null | undefined): boolean {
+        return !!this.ownerId && !!discordUserId && this.ownerId === discordUserId;
+    }
+
+    /** The owner's Discord member, if they're still cached in the guild. */
+    async getOwnerMember() {
+        if (!this.ownerId) return null;
+        const discordGuild = (await this.getGuild())?.getDiscordGuild();
+        return discordGuild?.members.cache.get(this.ownerId) ?? null;
     }
 
     async getActiveCredentialUser() {

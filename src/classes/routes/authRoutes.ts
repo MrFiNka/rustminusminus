@@ -3,8 +3,9 @@ import axios from "axios";
 import { DiscordBot } from "../DiscordBot";
 import { OauthModel } from "../../models/OAuth";
 import { sessionPlugin } from "./session";
+import { oauthRedirectUri } from "../../urls";
 
-let REDIRECT_URI = Bun.env.PROTOCOL + "://" + Bun.env.HOST + ":" + Bun.env.PORT + "/callback"
+const REDIRECT_URI = oauthRedirectUri();
 
 export const authRoutes = new Elysia({ name: "authRoutes" })
     .use(sessionPlugin)

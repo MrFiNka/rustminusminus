@@ -5,7 +5,7 @@ export function createPermissionGroupDetailLoader(cookieToken: string | undefine
     return async ({ params }: LoaderFunctionArgs) => {
         const [groupResult, definitionsResult, assignableResult] = await Promise.all([
             getPermissionGroupDetail(cookieToken, params.guildId!, params.groupId!),
-            getPermissionDefinitions(cookieToken, params.guildId!),
+            getPermissionDefinitions(cookieToken, params.guildId!, params.groupId!),
             getAssignableMembers(cookieToken, params.guildId!, params.groupId!),
         ]);
         if (!groupResult.ok) throw new Response(groupResult.error, { status: groupResult.status });

@@ -4,7 +4,8 @@ import { DiscordBot } from "../classes/DiscordBot";
 import { getRandomHexColor } from "../utils";
 import { disconnectTeam } from "../rustplus/connections";
 import { registry } from "../modules/ModuleRegistry";
-import { ChannelType, PermissionFlagsBits, Role, type Guild } from "discord.js";
+import { ChannelType, EmbedBuilder, PermissionFlagsBits, Role, type Guild } from "discord.js";
+import { teamPageUrl } from "../urls";
 const GuildSchema = new Schema({
     guildId: { type: String, required: true, unique: true },
     teams: [{ type: Schema.Types.ObjectId, ref: "Team" }],
@@ -28,7 +29,9 @@ export class GuildClass extends Document<Types.ObjectId> {
             ?? false;
     }
 
-    async createTeam(name: string) {
+    /** `ownerId` is the Discord user id of whoever asked for the team; they become its owner, which
+     *  lets them manage the team's own permission groups without being a guild admin. */
+    async createTeam(name: string, ownerId?: string) {
         let guild = this.getDiscordGuild();
         if (!guild) return false;
         let role = await guild.roles.create({
@@ -49,6 +52,7 @@ export class GuildClass extends Document<Types.ObjectId> {
         let { categoryChannelId, roleId, alarmsChannelId, informationChannelId, playerActivityChannelId, serversChannelId, storageMonitorsChannelId, switchesChannelId, teamchatChannelId, eventsChannelId } = setup;
         let team = await TeamModel.create({
             name,
+            ownerId,
             discord: {
                 category: {
                     id: categoryChannelId
@@ -89,7 +93,39 @@ export class GuildClass extends Document<Types.ObjectId> {
         this.teams.push(team._id);
         await this.save();
         await DiscordBot.Instance.refreshTeamChatChannels();
+        await this.postTeamWelcome(team, informationChannelId);
         return true;
+    }
+
+    /**
+     * Posts the team's dashboard link into its information channel, so whoever ran `/team create`
+     * (or `/team reset`) can get to the web UI without knowing the URL scheme or the team's id.
+     * Called from both paths - a reset recreates the channel from scratch, so the original message
+     * is gone with it.
+     *
+     * Best-effort: the team already exists and is fully usable by the time this runs, so a missing
+     * channel or a send failure is logged rather than allowed to fail the whole operation.
+     */
+    async postTeamWelcome(team: TeamClass, informationChannelId: string) {
+        try {
+            const guild = this.getDiscordGuild();
+            const channel = guild?.channels.cache.get(informationChannelId);
+            if (!channel?.isSendable()) return;
+            const url = teamPageUrl(this.guildId, team._id.toString());
+            await channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle(`${team.name} is ready`)
+                        .setDescription(
+                            "Manage this team from the web dashboard — pair servers, control devices,"
+                            + ` toggle modules and change settings:\n\n${url}`
+                        )
+                        .setColor(0x57f287),
+                ],
+            });
+        } catch (err) {
+            console.error(`Failed to post the dashboard link for team "${team.name}":`, err);
+        }
     }
 
     async setupTeamChannels(name: string, role?: Role) {

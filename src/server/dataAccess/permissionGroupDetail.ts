@@ -1,15 +1,11 @@
-import { PermissionGroupModel } from "../../models/PermissionGroup";
 import { GuildModel } from "../../models/Guild";
-import { requireGuildAdmin } from "../../permissions/web";
-import { PERMISSIONS } from "../../permissions/definitions";
-import { fail, ok } from "./shared";
+import { grantablePermissions } from "../../permissions/definitions";
+import { fail, ok, resolveManageablePermissionGroup } from "./shared";
 
 export async function getPermissionGroupDetail(cookieToken: string | undefined, guildId: string, groupId: string) {
-    if (!(await requireGuildAdmin(cookieToken, guildId))) {
-        return fail(401, "Not authorized");
-    }
-    const group = await PermissionGroupModel.findOne({ _id: groupId, guildId });
-    if (!group) return fail(404, "Permission group not found");
+    const resolved = await resolveManageablePermissionGroup(cookieToken, guildId, groupId);
+    if (!resolved.ok) return resolved;
+    const group = resolved.data;
     let teamName: string | null = null;
     if (group.teamId) {
         const guild = await GuildModel.findOne({ guildId });
@@ -26,19 +22,18 @@ export async function getPermissionGroupDetail(cookieToken: string | undefined, 
     });
 }
 
-export async function getPermissionDefinitions(cookieToken: string | undefined, guildId: string) {
-    if (!(await requireGuildAdmin(cookieToken, guildId))) {
-        return fail(401, "Not authorized");
-    }
-    return ok(PERMISSIONS);
+/** The permissions this specific group may carry - scoped to it, since a team group can't hold
+ *  guild-level permissions (see `grantablePermissions`). */
+export async function getPermissionDefinitions(cookieToken: string | undefined, guildId: string, groupId: string) {
+    const resolved = await resolveManageablePermissionGroup(cookieToken, guildId, groupId);
+    if (!resolved.ok) return resolved;
+    return ok(grantablePermissions(!!resolved.data.teamId));
 }
 
 export async function getAssignableMembers(cookieToken: string | undefined, guildId: string, groupId: string) {
-    if (!(await requireGuildAdmin(cookieToken, guildId))) {
-        return fail(401, "Not authorized");
-    }
-    const group = await PermissionGroupModel.findOne({ _id: groupId, guildId });
-    if (!group) return fail(404, "Permission group not found");
+    const resolved = await resolveManageablePermissionGroup(cookieToken, guildId, groupId);
+    if (!resolved.ok) return resolved;
+    const group = resolved.data;
     const discordGuild = group.getDiscordGuild();
     if (!discordGuild) return fail(404, "Discord server not found");
     const candidates = [];

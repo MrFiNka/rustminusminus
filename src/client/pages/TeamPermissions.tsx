@@ -1,31 +1,43 @@
 import { useState } from "react";
-import { useNavigate, useParams, useLoaderData, useRevalidator, type LoaderFunctionArgs } from "react-router-dom";
+import { Link, useNavigate, useParams, useLoaderData, useRevalidator, type LoaderFunctionArgs } from "react-router-dom";
 import { GuildSubNav } from "../components/GuildSubNav";
+import { TeamSubNav } from "../components/TeamSubNav";
 import { EmptyState, Table, Tbody, Td, Th, Thead, Tr } from "../components/Table";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 
-interface PermissionGroupSummary {
+interface TeamPermissionGroup {
     id: string;
     name: string;
     permissions: string[];
     memberCount: number;
 }
 
-interface PermissionGroupsLoaderData {
-    groups: PermissionGroupSummary[];
+interface GrantablePermission {
+    id: string;
+    label: string;
 }
 
-export async function loader({ params }: LoaderFunctionArgs): Promise<PermissionGroupsLoaderData> {
-    const res = await fetch(`/api/guilds/${params.guildId}/permission-groups`);
+interface TeamPermissionsLoaderData {
+    teamName: string;
+    groups: TeamPermissionGroup[];
+    grantable: GrantablePermission[];
+}
+
+export async function loader({ params }: LoaderFunctionArgs): Promise<TeamPermissionsLoaderData> {
+    const res = await fetch(`/api/guilds/${params.guildId}/teams/${params.teamId}/permission-groups`);
     const data = await res.json();
-    if (!res.ok) throw new Response(data?.error ?? "Failed to load permission groups", { status: res.status });
-    return { groups: Array.isArray(data?.groups) ? data.groups : [] };
+    if (!res.ok) throw new Response(data?.error ?? "Failed to load this team's permissions", { status: res.status });
+    return {
+        teamName: typeof data?.teamName === "string" ? data.teamName : "",
+        groups: Array.isArray(data?.groups) ? data.groups : [],
+        grantable: Array.isArray(data?.grantable) ? data.grantable : [],
+    };
 }
 
 export function Component() {
-    const { guildId } = useParams<{ guildId: string }>();
+    const { guildId, teamId } = useParams<{ guildId: string; teamId: string }>();
     const navigate = useNavigate();
-    const { groups } = useLoaderData() as PermissionGroupsLoaderData;
+    const { teamName, groups, grantable } = useLoaderData() as TeamPermissionsLoaderData;
     const revalidator = useRevalidator();
     const [creating, setCreating] = useState(false);
     const [name, setName] = useState("");
@@ -36,11 +48,11 @@ export function Component() {
         if (!name.trim()) return;
         setSubmitting(true);
         setError(null);
-        // No teamId: this screen only ever creates guild-wide groups now.
+        // Same endpoint the guild screen uses - the teamId in the body is what scopes it here.
         const res = await fetch(`/api/guilds/${guildId}/permission-groups`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, teamId: null }),
+            body: JSON.stringify({ name, teamId }),
         });
         const json = await res.json();
         setSubmitting(false);
@@ -59,13 +71,18 @@ export function Component() {
         setError(null);
     };
 
-    if (!guildId) return null;
+    if (!guildId || !teamId) return null;
 
     return (
         <div>
             <GuildSubNav guildId={guildId} />
+            <Link to={`/guild/${guildId}/teams/${teamId}`} className="text-sm text-neutral-500 hover:text-white">
+                ← {teamName}
+            </Link>
+            <h1 className="mt-2 mb-2 text-2xl font-semibold text-white">{teamName}</h1>
+            <TeamSubNav guildId={guildId} teamId={teamId} />
             <div className="mb-1 flex items-center justify-between">
-                <h1 className="text-2xl font-semibold text-white">Permissions</h1>
+                <h2 className="text-lg font-semibold text-white">Permissions</h2>
                 {!creating && (
                     <button
                         onClick={() => setCreating(true)}
@@ -76,7 +93,7 @@ export function Component() {
                 )}
             </div>
             <p className="mb-6 text-sm text-neutral-500">
-                Server-wide groups — these grant on every team. To grant on one team only, use that team&apos;s
+                Groups here grant only on {teamName || "this team"}. Server-wide grants live on the server&apos;s
                 Permissions tab.
             </p>
             {creating && (
@@ -107,11 +124,19 @@ export function Component() {
                             Cancel
                         </button>
                     </div>
+                    {grantable.length > 0 && (
+                        <p className="mt-2 text-xs text-neutral-500">
+                            Can grant: {grantable.map((p) => p.label).join(", ")}.
+                        </p>
+                    )}
                     {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
                 </div>
             )}
             {groups.length === 0 ? (
-                <EmptyState>No server-wide groups yet. Create one to delegate access without full admin.</EmptyState>
+                <EmptyState>
+                    No groups for this team yet. Create one to let a member manage this team without giving them
+                    Manage Server.
+                </EmptyState>
             ) : (
                 <Table>
                     <Thead>
@@ -121,7 +146,10 @@ export function Component() {
                     </Thead>
                     <Tbody>
                         {groups.map((group) => (
-                            <Tr key={group.id} onClick={() => navigate(`/guild/${guildId}/permissions/${group.id}`)}>
+                            <Tr
+                                key={group.id}
+                                onClick={() => navigate(`/guild/${guildId}/teams/${teamId}/permissions/${group.id}`)}
+                            >
                                 <Td className="font-medium text-white">{group.name}</Td>
                                 <Td className="text-neutral-400">
                                     {group.permissions.length > 0 ? (

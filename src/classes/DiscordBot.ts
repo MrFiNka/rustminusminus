@@ -1,4 +1,4 @@
-import { Client, Events, Guild, REST, Routes, type ClientOptions, type Message } from "discord.js";
+import { Client, Events, Guild, REST, Routes, type ChatInputCommandInteraction, type ClientOptions, type Message } from "discord.js";
 import fs from "fs/promises";
 import type { CommandType } from "../types/DiscordCommandType";
 import { GuildModel } from "../models/Guild";
@@ -48,23 +48,15 @@ export class DiscordBot extends Client {
         });
         this.on(Events.InteractionCreate, async (interaction) => {
             if (!interaction.isChatInputCommand()) return;
-
-            const coreCommand = this.coreCommands.find(e => e.name == interaction.commandName);
-            if (coreCommand) {
-                await coreCommand.command(interaction);
-                return;
+            // Nothing above this awaited the handler safely, so any throw inside a command surfaced
+            // as an unhandled rejection and could take the process down. Contain it here and try to
+            // tell the user something, rather than leaving their command silently hung.
+            try {
+                await this.dispatchChatInputCommand(interaction);
+            } catch (error) {
+                console.error(`Command /${interaction.commandName} failed:`, error);
+                await this.reportCommandFailure(interaction);
             }
-
-            if (!interaction.guildId) return;
-            const owningModule = registry.moduleDiscordCommandOwners().get(interaction.commandName);
-            if (!owningModule) return;
-            // race-condition safety net: the command normally isn't even registered when disabled
-            if (!registry.isEnabledForGuild(owningModule.id, interaction.guildId)) {
-                await interaction.reply({ content: "This module is disabled for this server.", flags: ["Ephemeral"] });
-                return;
-            }
-            const command = owningModule.discordCommands?.find(c => c.name === interaction.commandName);
-            await command?.command(interaction);
         });
         // Discord -> game half of the chat-relay module (the game -> Discord half is that
         // module's onTeamMessage hook, dispatched like any other module through EventDispatcher).
@@ -98,6 +90,36 @@ export class DiscordBot extends Client {
             await conn.sendTeamMessage(message.content);
         });
     }
+    /** Routes one chat-input interaction to its core or module-owned command. */
+    private async dispatchChatInputCommand(interaction: ChatInputCommandInteraction) {
+        const coreCommand = this.coreCommands.find(e => e.name == interaction.commandName);
+        if (coreCommand) {
+            await coreCommand.command(interaction);
+            return;
+        }
+
+        if (!interaction.guildId) return;
+        const owningModule = registry.moduleDiscordCommandOwners().get(interaction.commandName);
+        if (!owningModule) return;
+        // race-condition safety net: the command normally isn't even registered when disabled
+        if (!registry.isEnabledForGuild(owningModule.id, interaction.guildId)) {
+            await interaction.reply({ content: "This module is disabled for this server.", flags: ["Ephemeral"] });
+            return;
+        }
+        const command = owningModule.discordCommands?.find(c => c.name === interaction.commandName);
+        await command?.command(interaction);
+    }
+
+    /** Best-effort "something went wrong" for a command that threw. Silent if the interaction is
+     *  already gone (e.g. a command that deleted the very channel it was invoked in). */
+    private async reportCommandFailure(interaction: ChatInputCommandInteraction) {
+        const content = "Something went wrong running that command. Check the bot logs for details.";
+        try {
+            if (interaction.deferred || interaction.replied) await interaction.editReply({ content });
+            else await interaction.reply({ content, flags: ["Ephemeral"] });
+        } catch { /* interaction or its channel is gone - nothing left to report to */ }
+    }
+
     /** Flags a teamchat message that wasn't relayed to the game: a ❌ reaction plus a short reply
      *  that self-deletes so it doesn't clutter the channel. */
     private async rejectBridgeMessage(message: Message, reason: string) {

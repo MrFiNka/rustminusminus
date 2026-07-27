@@ -8,6 +8,7 @@ import { createTeamsLoader } from "./loaders/teams";
 import { createTeamDetailLoader } from "./loaders/teamDetail";
 import { createTeamModulesLoader } from "./loaders/teamModules";
 import { createTeamSettingsLoader } from "./loaders/teamSettings";
+import { createTeamPermissionGroupsLoader } from "./loaders/teamPermissionGroups";
 import { createServerDetailLoader } from "./loaders/serverDetail";
 import { createPermissionGroupsLoader } from "./loaders/permissionGroups";
 import { createPermissionGroupDetailLoader } from "./loaders/permissionGroupDetail";
@@ -29,6 +30,7 @@ export function createServerRoutes(cookieToken: string | undefined): RouteObject
         teamDetail: createTeamDetailLoader(cookieToken),
         teamModules: createTeamModulesLoader(cookieToken),
         teamSettings: createTeamSettingsLoader(cookieToken),
+        teamPermissionGroups: createTeamPermissionGroupsLoader(cookieToken),
         serverDetail: createServerDetailLoader(cookieToken),
         permissionGroups: createPermissionGroupsLoader(cookieToken),
         permissionGroupDetail: createPermissionGroupDetailLoader(cookieToken),

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams, useLoaderData, useRevalidator, type LoaderFunctionArgs } from "react-router-dom";
 import { GuildSubNav } from "../components/GuildSubNav";
+import { TeamSubNav } from "../components/TeamSubNav";
 import { EmptyState } from "../components/Table";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 
@@ -40,7 +41,7 @@ export async function loader({ params }: LoaderFunctionArgs): Promise<Permission
     const { guildId, groupId } = params;
     const [groupRes, definitionsRes, assignableRes] = await Promise.all([
         fetch(`/api/guilds/${guildId}/permission-groups/${groupId}`),
-        fetch(`/api/guilds/${guildId}/permission-groups/definitions`),
+        fetch(`/api/guilds/${guildId}/permission-groups/${groupId}/definitions`),
         fetch(`/api/guilds/${guildId}/permission-groups/${groupId}/assignable-members`),
     ]);
     const groupJson = await groupRes.json();
@@ -57,7 +58,9 @@ export async function loader({ params }: LoaderFunctionArgs): Promise<Permission
 }
 
 export function Component() {
-    const { guildId, groupId } = useParams<{ guildId: string; groupId: string }>();
+    // teamId is present only on the team-scoped route (teams/:teamId/permissions/:groupId). It
+    // decides which sub-nav and back link this page wears - the group data itself is identical.
+    const { guildId, teamId, groupId } = useParams<{ guildId: string; teamId?: string; groupId: string }>();
     const navigate = useNavigate();
     const { group: data, definitions, assignableMembers } = useLoaderData() as PermissionGroupDetailLoaderData;
     const revalidator = useRevalidator();
@@ -105,10 +108,12 @@ export function Component() {
         revalidator.revalidate();
     };
 
+    const listPath = teamId ? `/guild/${guildId}/teams/${teamId}/permissions` : `/guild/${guildId}/permissions`;
+
     const deleteGroup = async () => {
         if (!confirm(`Delete permission group "${data.name}"?`)) return;
         await fetch(`/api/guilds/${guildId}/permission-groups/${groupId}`, { method: "DELETE" });
-        navigate(`/guild/${guildId}/permissions`);
+        navigate(listPath);
     };
 
     if (!guildId || !groupId) return null;
@@ -118,15 +123,20 @@ export function Component() {
 
     return (
         <div>
+            {/* The guild nav stays on team-scoped routes too - every other team page keeps it, and
+                dropping it stranded this page with no way back up to the guild. */}
             <GuildSubNav guildId={guildId} />
-            <Link to={`/guild/${guildId}/permissions`} className="text-sm text-neutral-500 hover:text-white">
+            {teamId && <TeamSubNav guildId={guildId} teamId={teamId} />}
+            <Link to={listPath} className="text-sm text-neutral-500 hover:text-white">
                 ← Permissions
             </Link>
             <div className="mt-2 mb-6 flex items-center justify-between">
                 <div>
                     <h1 className="text-2xl font-semibold text-white">{data.name}</h1>
                     <p className="mt-0.5 text-xs text-neutral-500">
-                        {data.teamId ? `Team scope: ${data.teamName ?? data.teamId}` : "Guild-wide — grants on every team"}
+                        {data.teamId
+                            ? `Grants on ${data.teamName ?? "this team"} only`
+                            : "Server-wide — grants on every team"}
                     </p>
                 </div>
                 <button
