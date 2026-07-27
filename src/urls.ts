@@ -10,7 +10,7 @@
  *  The port is always included - deliberately, since changing that string would invalidate an
  *  already-registered OAuth redirect URI. */
 function baseUrl(): string {
-    return `${Bun.env.PROTOCOL}://${Bun.env.HOST}:${Bun.env.EXTERNALPORT}`;
+    return `${Bun.env.BASE_URL}`;
 }
 
 /** Discord OAuth2 callback. Must exactly match a redirect URI registered for the application. */
