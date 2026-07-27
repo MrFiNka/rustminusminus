@@ -88,6 +88,33 @@ export async function canManagePermissionGroup(
 
 /** The subset of `teams` whose permission groups the actor may manage - same rule as
  *  `canManageTeamPermissionGroups`, resolved for the whole list in a single query. */
+/**
+ * May add a member to a team outright, with no invite for them to accept.
+ *
+ * Resolved WITHOUT a teamId on purpose: `resolveUserPermissions` then only considers guild-wide
+ * groups, so a team-scoped grant can never reach this. Bypassing someone's consent is a guild-level
+ * trust decision - a team lead delegating within their own team shouldn't be able to hand it out.
+ */
+export async function canAddTeamMembersDirectly(guildId: string, actor: Actor): Promise<boolean> {
+    if (isGuildLevelOverride(actor)) return true;
+    if (!actor.discordUserId) return false;
+    const granted = await resolveUserPermissions(guildId, actor.discordUserId);
+    return granted.has("teammembers.forceadd");
+}
+
+/**
+ * May send someone an invite to this team. The team's owner, or a `teammembers.manage` grant
+ * reaching this team (guild-wide or scoped to it). Anyone who can add directly can obviously also
+ * invite, so that check comes first.
+ */
+export async function canInviteTeamMembers(guildId: string, actor: Actor, team: TeamClass): Promise<boolean> {
+    if (await canAddTeamMembersDirectly(guildId, actor)) return true;
+    if (!actor.discordUserId) return false;
+    if (team.isOwnedBy(actor.discordUserId)) return true;
+    const granted = await resolveUserPermissions(guildId, actor.discordUserId, team._id);
+    return granted.has("teammembers.manage");
+}
+
 export async function manageablePermissionTeams(
     guildId: string,
     actor: Actor,

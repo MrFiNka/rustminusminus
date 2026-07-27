@@ -10,7 +10,8 @@ export function createTeamDetailLoader(cookieToken: string | undefined) {
         if (!teamResult.ok) throw new Response(teamResult.error, { status: teamResult.status });
         return {
             team: teamResult.data,
-            addableUsers: addableResult.ok ? addableResult.data : [],
+            addableUsers: addableResult.ok ? addableResult.data.candidates : [],
+            pendingInviteeIds: addableResult.ok ? addableResult.data.pendingInviteeIds : [],
         };
     };
 }

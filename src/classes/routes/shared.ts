@@ -1,5 +1,5 @@
 import { GuildModel } from "../../models/Guild";
-import { isTeamMemberOrAdmin, requireGuildAdmin } from "../../permissions/web";
+import { getWebActor, isTeamMemberOrAdmin, requireGuildAdmin } from "../../permissions/web";
 import { findGuildTeam, fail, ok } from "../../server/dataAccess/shared";
 
 /** Requires guild-admin auth, then resolves the guild itself. Used by routes that don't need a team. */
@@ -11,16 +11,18 @@ export async function resolveAdminGuild(cookieToken: string | undefined, guildId
 }
 
 /**
- * Requires guild-admin auth, then resolves the guild and one of its teams by id. This is the
- * "requireGuildAdmin -> GuildModel.findOne -> findGuildTeam" sequence that used to be copy-pasted
- * into every team-scoped mutation route.
+ * Resolves the guild, one of its teams, and the session `Actor` - and authorizes NOTHING itself.
+ *
+ * For the member routes, where "may add directly" and "may invite" are two different bars over the
+ * same team (see permissions/scopes.ts): each route applies its own check to the returned actor, so
+ * neither has to re-do the lookup to get one.
  */
-export async function resolveGuildTeam(cookieToken: string | undefined, guildId: string, teamId: string) {
-    const guildResult = await resolveAdminGuild(cookieToken, guildId);
-    if (!guildResult.ok) return guildResult;
-    const team = await findGuildTeam(guildResult.data, teamId);
+export async function resolveTeamForMemberAction(cookieToken: string | undefined, guildId: string, teamId: string) {
+    const guild = await GuildModel.findOne({ guildId });
+    if (!guild) return fail(404, "Guild not found");
+    const team = await findGuildTeam(guild, teamId);
     if (!team) return fail(404, "Team not found");
-    return ok({ guild: guildResult.data, team });
+    return ok({ guild, team, actor: await getWebActor(cookieToken, guildId) });
 }
 
 /**

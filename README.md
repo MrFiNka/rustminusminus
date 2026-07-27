@@ -104,20 +104,23 @@ Tailwind CSS v4 · [rustminus](https://www.npmjs.com/package/rustminus) (Rust+ p
    ```env
    TOKEN=your-discord-bot-token
    OAUTH_SECRET=your-discord-oauth2-client-secret
+   BASE_URL=http://localhost:3000
    PORT=3000
-   HOST=localhost
-   PROTOCOL=http
    MONGODB_URI=mongodb://127.0.0.1/rustminusminus
    STEAM_API_KEY=your-steam-web-api-key
    NODE_ENV=production
    # Optional: Discord user id granted bot-owner-only surfaces (the global /modules page)
    OWNER_DISCORD_ID=
    ```
+   `BASE_URL` is the dashboard's public origin — everything the bot links to (the OAuth redirect
+   URI, the team page it posts on `/team create`) is built from it, so behind a reverse proxy it's
+   the *external* address, not `localhost:PORT`. `PORT` is only what the server binds to locally.
+
    For a hosted MongoDB (e.g. Atlas) or one with auth enabled, `MONGODB_URI` just needs to be a
    full connection string with credentials, e.g.
    `mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/rustminusminus`.
-3. In the Discord Developer Portal, add `http://<HOST>:<PORT>/callback` as an OAuth2 redirect URI
-   (matching `PROTOCOL`/`HOST`/`PORT` above), with the `identify` and `guilds` scopes.
+3. In the Discord Developer Portal, add `<BASE_URL>/callback` as an OAuth2 redirect URI (it must
+   match exactly), with the `identify` and `guilds` scopes.
 4. Run it:
    ```sh
    bun start
@@ -147,9 +150,11 @@ Always available:
 - `/credentials add|delete` — link your Rust+ FCM/Steam credentials to your Discord account (used
   to receive pairing notifications and control servers on your behalf). The Steam ID is verified
   against the Steam API and can only be claimed by one Discord account.
-- `/team create|delete|reset|adduser|removeuser` — create/manage an in-game team and its Discord
-  channels/role. `create`/`delete`/`reset` require Manage Server; `adduser`/`removeuser` require
-  Manage Server or the `teammembers.manage` permission for that team.
+- `/team create|delete|reset|setowner|invite|adduser|removeuser` — create/manage an in-game team and
+  its Discord channels/role. `create`/`delete`/`reset` require Manage Server. `invite`/`removeuser`
+  require Manage Server, team ownership, or the `teammembers.manage` permission for that team.
+  `adduser` is the only way to join someone without asking them, so it needs the separate,
+  guild-wide-only `teammembers.forceadd` — see [Team invites](#team-invites).
 - `/permissions group create|delete|list|add-permission|remove-permission` and
   `/permissions assign|unassign` — manage permission groups and their members (Manage Server only).
   Groups are guild-wide by default, or scoped to a single team with the `team` option.
@@ -173,13 +178,33 @@ require an explicit grant and unlinked players are always denied.
 
 Current permissions: `modules.manage`, `chatlinks.manage`, `switches.toggle`, `alarms.manage`,
 `raidalerts.manage`, `storagemonitors.manage`, `activeserver.manage`, `activecredential.manage`,
-`teammembers.manage`. They're declared in
-[`src/permissions/definitions.ts`](src/permissions/definitions.ts); the dashboard and the
-`/permissions` command both enumerate that list, so adding one is a single entry.
+`teammembers.manage`, `teammembers.forceadd`, `permissions.manage`, `teampermissions.manage`.
+They're declared in [`src/permissions/definitions.ts`](src/permissions/definitions.ts); the
+dashboard and the `/permissions` command both enumerate that list, so adding one is a single entry.
+
+A few permissions are marked guild-only and can't be put in a team-scoped group, because granting
+them within one team would still be a guild-level delegation: `permissions.manage` (guild-wide
+groups grant on *every* team) and `teammembers.forceadd` (see below).
+
+### Team invites
+
+Adding someone to a team is normally consensual. `/team invite` (or the Invite button on the team
+page) DMs them an embed with **Accept** / **Refuse**; nothing changes until they press one.
+
+Pending invites are rows in Mongo, not in-memory state, which is what makes them survive a bot
+restart and makes them unforgeable: the button's `customId` carries only an invite id, and the
+press is rejected unless the presser *is* the invitee. They expire after 24 hours (a TTL index,
+re-checked in code so an unswept row can't be accepted late).
+
+Skipping the invite is a separate permission, `teammembers.forceadd`, and it can only be granted in
+a **guild-wide** group — putting someone in a team without their consent is a guild-level trust
+decision, so a team lead delegating within their own team can't hand it out. Bot owner and Manage
+Server hold it implicitly. The dashboard hides the "Add directly" button from anyone who lacks it,
+and the API re-checks independently.
 
 ## Web dashboard
 
-Visit the bot's web address (`PROTOCOL://HOST:PORT`) and log in with Discord.
+Visit the bot's web address (`BASE_URL`) and log in with Discord.
 
 - `/guilds` — servers you can access (guild admins, team members, and permission-group members).
 - `/guild/:id/modules` — enable/disable modules for the whole guild.

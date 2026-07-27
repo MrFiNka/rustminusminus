@@ -10,8 +10,10 @@ import { renameDevice, removeDevice } from "../../server/dataAccess/deviceAction
 import { searchVending } from "../../server/dataAccess/vendingSearch";
 import { requireTeamModuleAccess } from "../../server/dataAccess/shared";
 import { getSessionDiscordId, requirePermission } from "../../permissions/web";
+import { canAddTeamMembersDirectly, canInviteTeamMembers } from "../../permissions/scopes";
+import { sendTeamInvite } from "../../discord/teamInvites";
 import { sessionPlugin } from "./session";
-import { resolveAdminGuild, resolveGuildTeam, resolveMemberTeam } from "./shared";
+import { resolveAdminGuild, resolveMemberTeam, resolveTeamForMemberAction } from "./shared";
 
 export const teamsRoutes = new Elysia({ name: "teamsRoutes" })
     .use(sessionPlugin)
@@ -71,12 +73,27 @@ export const teamsRoutes = new Elysia({ name: "teamsRoutes" })
         if (!result.ok) { set.status = result.status; return { error: result.error }; }
         return result.data;
     })
+    // Adding with no invite for the user to accept - its own guild-wide permission, deliberately
+    // narrower than the invite route below. The client hides the button, but this is the gate.
     .post("guilds/:guildId/teams/:teamId/members", async ({ params, body, cookieToken, set }) => {
-        const result = await resolveGuildTeam(cookieToken as string | undefined, params.guildId as string, params.teamId as string);
+        const result = await resolveTeamForMemberAction(cookieToken as string | undefined, params.guildId as string, params.teamId as string);
         if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        const { guild, team, actor } = result.data;
+        if (!(await canAddTeamMembersDirectly(guild.guildId, actor))) { set.status = 401; return { error: "Not authorized" }; }
         const { userId } = body as { userId: string };
-        const addResult = await result.data.team.addMember(userId);
+        const addResult = await team.addMember(userId);
         if (!addResult.ok) { set.status = 400; return { error: addResult.error }; }
+        return { ok: true };
+    })
+    .post("guilds/:guildId/teams/:teamId/invites", async ({ params, body, cookieToken, set }) => {
+        const result = await resolveTeamForMemberAction(cookieToken as string | undefined, params.guildId as string, params.teamId as string);
+        if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        const { guild, team, actor } = result.data;
+        if (!(await canInviteTeamMembers(guild.guildId, actor, team))) { set.status = 401; return { error: "Not authorized" }; }
+        if (!actor.discordUserId) { set.status = 401; return { error: "Not authorized" }; }
+        const { userId } = body as { userId: string };
+        const inviteResult = await sendTeamInvite(guild, team, actor.discordUserId, userId);
+        if (!inviteResult.ok) { set.status = 400; return { error: inviteResult.error }; }
         return { ok: true };
     })
     .get("guilds/:guildId/teams/:teamId/servers/:serverId", async ({ params, cookieToken, set }) => {

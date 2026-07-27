@@ -6,9 +6,9 @@
  * why these live in their own module rather than there.
  */
 
-/** `PROTOCOL://HOST:PORT`, matching the redirect URI registered in the Discord Developer Portal.
- *  The port is always included - deliberately, since changing that string would invalidate an
- *  already-registered OAuth redirect URI. */
+/** The dashboard's public origin (`BASE_URL`), which must match the redirect URI registered in the
+ *  Discord Developer Portal exactly - changing it invalidates an already-registered redirect URI.
+ *  Behind a reverse proxy this is the external address, not the local bind address. */
 function baseUrl(): string {
     return `${Bun.env.BASE_URL}`;
 }

@@ -9,6 +9,7 @@ export type PermissionId =
     | "activeserver.manage"
     | "activecredential.manage"
     | "teammembers.manage"
+    | "teammembers.forceadd"
     | "permissions.manage"
     | "teampermissions.manage";
 
@@ -96,9 +97,19 @@ export const PERMISSIONS: PermissionDefinition[] = [
     {
         id: "teammembers.manage",
         label: "Manage team members",
-        description: "Add and remove members from a team (/team adduser, /team removeuser).",
+        description: "Invite people to a team and remove its members (/team invite, /team removeuser).",
         status: "enforced",
         teamScoped: true,
+    },
+    // Deliberately separate from teammembers.manage, and deliberately NOT teamScoped. Skipping the
+    // invite means putting someone in a team without their consent, which is a guild-level trust
+    // decision - so it can only be granted in a guild-wide group, never a team-scoped one
+    // (grantablePermissions filters on teamScoped, so omitting the flag is what enforces that).
+    {
+        id: "teammembers.forceadd",
+        label: "Add team members without an invite",
+        description: "Add someone to a team directly, skipping the invite they would otherwise accept.",
+        status: "enforced",
     },
     // The two below are deliberately separate, not one "manage permissions": guild-wide groups grant
     // on every team, so handing someone the ability to edit them is a much larger delegation than

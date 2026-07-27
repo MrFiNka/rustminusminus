@@ -1,4 +1,4 @@
-import { Client, Events, Guild, REST, Routes, type ChatInputCommandInteraction, type ClientOptions, type Message } from "discord.js";
+import { Client, Events, Guild, REST, Routes, type ButtonInteraction, type ChatInputCommandInteraction, type ClientOptions, type Message } from "discord.js";
 import fs from "fs/promises";
 import type { CommandType } from "../types/DiscordCommandType";
 import { GuildModel } from "../models/Guild";
@@ -6,6 +6,7 @@ import { TeamModel } from "../models/Team";
 import { UserModel } from "../models/User";
 import { registry } from "../modules/ModuleRegistry";
 import { getOrCreateUserRustplus, markRelayedToGame } from "../rustplus/connections";
+import { dispatchButton } from "../discord/buttons";
 import { CHAT_PAIRING_HELP } from "../utils";
 
 export class DiscordBot extends Client {
@@ -47,6 +48,17 @@ export class DiscordBot extends Client {
             this.guildRemove(guild);
         });
         this.on(Events.InteractionCreate, async (interaction) => {
+            // Buttons arrive on this same event and used to be dropped by the guard below. They can
+            // come from a DM, so nothing here may assume interaction.guildId is set.
+            if (interaction.isButton()) {
+                try {
+                    await dispatchButton(interaction);
+                } catch (error) {
+                    console.error(`Button ${interaction.customId} failed:`, error);
+                    await this.reportButtonFailure(interaction);
+                }
+                return;
+            }
             if (!interaction.isChatInputCommand()) return;
             // Nothing above this awaited the handler safely, so any throw inside a command surfaced
             // as an unhandled rejection and could take the process down. Contain it here and try to
@@ -118,6 +130,16 @@ export class DiscordBot extends Client {
             if (interaction.deferred || interaction.replied) await interaction.editReply({ content });
             else await interaction.reply({ content, flags: ["Ephemeral"] });
         } catch { /* interaction or its channel is gone - nothing left to report to */ }
+    }
+
+    /** Same idea as reportCommandFailure, for a button whose handler threw. Without this the press
+     *  just spins until Discord times it out with no explanation. */
+    private async reportButtonFailure(interaction: ButtonInteraction) {
+        const content = "Something went wrong handling that button. Check the bot logs for details.";
+        try {
+            if (interaction.deferred || interaction.replied) await interaction.followUp({ content, flags: ["Ephemeral"] });
+            else await interaction.reply({ content, flags: ["Ephemeral"] });
+        } catch { /* interaction is gone - nothing left to report to */ }
     }
 
     /** Flags a teamchat message that wasn't relayed to the game: a ❌ reaction plus a short reply

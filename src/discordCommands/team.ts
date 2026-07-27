@@ -4,7 +4,8 @@ import { GuildModel } from "../models/Guild";
 import { DiscordBot } from "../classes/DiscordBot";
 import { safeEditReply } from "../discord/safeReply";
 import { getDiscordActor, hasDiscordPermission } from "../permissions/discord";
-import { isBotOwner } from "../permissions/scopes";
+import { canAddTeamMembersDirectly, canInviteTeamMembers, isBotOwner } from "../permissions/scopes";
+import { sendTeamInvite } from "../discord/teamInvites";
 
 /** Subcommands that create or destroy Discord structure (channels, roles) or the team record
  *  itself. These are irreversible, so they're Manage-Server only - no permission-group bypass. */
@@ -129,12 +130,29 @@ export default {
             if (!guildDb) return await interaction.editReply({ content: "Can't find your guild in database!" });
             let teamDb = await guildDb.findTeamByName(name);
             if (!teamDb) return await interaction.editReply({ content: "Can't find the team" });
-            if (!(await hasDiscordPermission(interaction, "teammembers.manage", teamDb._id))) {
-                return await interaction.editReply({ content: "You aren't authorized to change this team's members." });
+            // Adding without asking is its own permission, and a guild-wide one - see
+            // canAddTeamMembersDirectly. Anyone below that bar invites instead.
+            if (!(await canAddTeamMembersDirectly(interaction.guild.id, getDiscordActor(interaction)))) {
+                return await interaction.editReply({ content: "You aren't authorized to add members directly. Use `/team invite` instead — they'll get a DM to accept." });
             }
             let result = await teamDb.addMember(user.id);
             if (!result.ok) return await interaction.editReply({ content: result.error });
             await interaction.editReply({ content: "Done." });
+        }
+        if (subcommand == "invite") {
+            let name = interaction.options.getString("name", true);
+            let user = interaction.options.getUser("user", true);
+            await interaction.deferReply({ flags: ["Ephemeral"] });
+            let guildDb = await GuildModel.findOne({ guildId: interaction.guild.id });
+            if (!guildDb) return await interaction.editReply({ content: "Can't find your guild in database!" });
+            let teamDb = await guildDb.findTeamByName(name);
+            if (!teamDb) return await interaction.editReply({ content: "Can't find the team" });
+            if (!(await canInviteTeamMembers(interaction.guild.id, getDiscordActor(interaction), teamDb))) {
+                return await interaction.editReply({ content: "You aren't authorized to invite people to this team." });
+            }
+            let result = await sendTeamInvite(guildDb, teamDb, interaction.user.id, user.id);
+            if (!result.ok) return await interaction.editReply({ content: result.error });
+            await interaction.editReply({ content: `Invite sent to ${user.username}. They'll join once they accept it.` });
         }
         if (subcommand == "removeuser") {
             let name = interaction.options.getString("name", true);
@@ -210,7 +228,7 @@ export default {
         .addSubcommand(subcommand =>
             subcommand
                 .setName("adduser")
-                .setDescription("Will add a user to team")
+                .setDescription("Add a user to a team immediately, without them accepting an invite")
                 .addStringOption(stringoption =>
                     stringoption
                         .setName("name")
@@ -221,6 +239,23 @@ export default {
                     useroption
                         .setName("user")
                         .setDescription("User to add to team")
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName("invite")
+                .setDescription("Invite a user to a team - they get a DM to accept or refuse")
+                .addStringOption(stringoption =>
+                    stringoption
+                        .setName("name")
+                        .setDescription("Name of the team")
+                        .setRequired(true)
+                )
+                .addUserOption(useroption =>
+                    useroption
+                        .setName("user")
+                        .setDescription("User to invite")
                         .setRequired(true)
                 )
         )

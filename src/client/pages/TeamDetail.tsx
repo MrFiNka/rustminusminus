@@ -44,6 +44,10 @@ interface TeamDetailResponse {
     isAdmin: boolean;
     canManageActiveServer: boolean;
     canManageActiveCredential: boolean;
+    /** May add someone with no invite for them to accept - hides the "Add directly" button. */
+    canAddMembersDirectly: boolean;
+    /** May send an invite - hides the whole add/invite panel. */
+    canInviteMembers: boolean;
     canSendChat: boolean;
     users: TeamMember[];
     activeServerId: string | null;
@@ -63,6 +67,9 @@ interface AddableUser {
 interface TeamDetailLoaderData {
     team: TeamDetailResponse;
     addableUsers: AddableUser[];
+    /** Discord ids among `addableUsers` who already have an invite out, so re-inviting doesn't look
+     *  like the button did nothing. */
+    pendingInviteeIds: string[];
 }
 
 export async function loader({ params }: LoaderFunctionArgs): Promise<TeamDetailLoaderData> {
@@ -78,14 +85,15 @@ export async function loader({ params }: LoaderFunctionArgs): Promise<TeamDetail
     const addableJson = await addableRes.json().catch(() => null);
     return {
         team: teamJson,
-        addableUsers: Array.isArray(addableJson) ? addableJson : [],
+        addableUsers: Array.isArray(addableJson?.candidates) ? addableJson.candidates : [],
+        pendingInviteeIds: Array.isArray(addableJson?.pendingInviteeIds) ? addableJson.pendingInviteeIds : [],
     };
 }
 
 export function Component() {
     const { guildId, teamId } = useParams<{ guildId: string; teamId: string }>();
     const navigate = useNavigate();
-    const { team: data, addableUsers } = useLoaderData() as TeamDetailLoaderData;
+    const { team: data, addableUsers, pendingInviteeIds } = useLoaderData() as TeamDetailLoaderData;
     const revalidator = useRevalidator();
     const [pending, setPending] = useState<string | null>(null);
     const [selectedUserId, setSelectedUserId] = useState("");
@@ -115,11 +123,13 @@ export function Component() {
         if (el) el.scrollTop = el.scrollHeight;
     }, [chat, data.connected]);
 
-    const addMember = async () => {
+    // "members" adds outright; "invites" DMs them an accept/refuse card and changes nothing until
+    // they act. Same request shape, so one function covers both.
+    const submitMember = async (endpoint: "members" | "invites") => {
         if (!selectedUserId) return;
         setAddSubmitting(true);
         setAddError(null);
-        const res = await fetch(`/api/guilds/${guildId}/teams/${teamId}/members`, {
+        const res = await fetch(`/api/guilds/${guildId}/teams/${teamId}/${endpoint}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ userId: selectedUserId }),
@@ -127,7 +137,7 @@ export function Component() {
         const json = await res.json();
         setAddSubmitting(false);
         if (!res.ok) {
-            setAddError(json.error ?? "Failed to add member");
+            setAddError(json.error ?? (endpoint === "members" ? "Failed to add member" : "Failed to send invite"));
             return;
         }
         setSelectedUserId("");
@@ -320,7 +330,7 @@ export function Component() {
                 </Table>
             )}
 
-            {data.isAdmin && (
+            {data.canInviteMembers && (
             <div className="mt-3 rounded-lg border border-border bg-surface p-4">
                 {addableUsers.length === 0 ? (
                     <p className="text-xs text-neutral-500">
@@ -336,23 +346,37 @@ export function Component() {
                             disabled={addSubmitting}
                             className="flex-1 rounded-md border border-border bg-canvas px-3 py-1.5 text-sm text-white focus:border-accent focus:outline-none disabled:opacity-50"
                         >
-                            <option value="">Select a user to add…</option>
+                            <option value="">Select a user…</option>
                             {addableUsers.map((u) => (
                                 <option key={u.userId} value={u.userId}>
                                     {u.displayName}
+                                    {pendingInviteeIds.includes(u.userId) ? " — invite pending" : ""}
                                 </option>
                             ))}
                         </select>
+                        {/* Only rendered for someone who may bypass consent - see canAddMembersDirectly. */}
+                        {data.canAddMembersDirectly && (
+                            <button
+                                onClick={() => submitMember("members")}
+                                disabled={addSubmitting || !selectedUserId}
+                                className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-neutral-300 transition-colors hover:bg-canvas disabled:opacity-50"
+                            >
+                                Add directly
+                            </button>
+                        )}
                         <button
-                            onClick={addMember}
+                            onClick={() => submitMember("invites")}
                             disabled={addSubmitting || !selectedUserId}
                             className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-black transition-colors hover:bg-accent-hover disabled:opacity-50"
                         >
-                            {addSubmitting ? "Adding…" : "Add"}
+                            {addSubmitting ? "Working…" : "Invite"}
                         </button>
                     </div>
                 )}
                 {addError && <p className="mt-2 text-xs text-red-400">{addError}</p>}
+                <p className="mt-2 text-xs text-neutral-500">
+                    Invited users get a DM they have to accept before joining.
+                </p>
             </div>
             )}
 
