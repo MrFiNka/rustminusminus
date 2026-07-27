@@ -57,6 +57,15 @@ function toUnit(x: number, y: number, geometry: MapGeometry) {
 const controlClass =
     "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface/90 text-neutral-300 backdrop-blur transition-colors hover:border-accent hover:text-white";
 
+/**
+ * Half as tall as it is wide, where the map used to be square - the full-card-width square was
+ * taller than most windows. The map keeps its own aspect and is fitted to the viewport's *width*
+ * (see useMapView), so this crops it vertically to a band and pans to reach the rest, rather than
+ * squashing it or shrinking it in both directions.
+ */
+const viewportClass =
+    "relative aspect-[2/1] w-full select-none overflow-hidden rounded-lg border border-border bg-canvas";
+
 export function ServerMap({
     guildId,
     teamId,
@@ -72,7 +81,7 @@ export function ServerMap({
     liveUnavailable,
 }: ServerMapProps) {
     const viewportRef = useRef<HTMLDivElement | null>(null);
-    const view = useMapView(viewportRef);
+    const view = useMapView(viewportRef, meta.width / meta.height);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const [cursorGrid, setCursorGrid] = useState<string | null>(null);
     const [selection, setSelection] = useState<MapSelection | null>(null);
@@ -120,9 +129,10 @@ export function ServerMap({
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
 
-        // Content space: the map fills the viewport at scale 1, then the view transform applies.
-        const sx = (u: number) => u * width * view.scale + view.tx;
-        const sy = (v: number) => v * height * view.scale + view.ty;
+        // The canvas is the viewport (it clips), but positions are normalised over the *content*,
+        // which is fitted to the viewport's width and so may be taller than it.
+        const sx = (u: number) => u * view.content.width * view.scale + view.tx;
+        const sy = (v: number) => v * view.content.height * view.scale + view.ty;
 
         if (layers.grid) {
             ctx.lineWidth = 1;
@@ -146,7 +156,7 @@ export function ServerMap({
             ctx.fillStyle = "rgba(255,255,255,0.55)";
             ctx.textBaseline = "top";
             const cellPx = overlay.columns.length > 1
-                ? (overlay.columns[1]!.offset - overlay.columns[0]!.offset) / geometry.imageWidth * width * view.scale
+                ? (overlay.columns[1]!.offset - overlay.columns[0]!.offset) / geometry.imageWidth * view.content.width * view.scale
                 : 0;
             // Skip labels once cells get too small to read - drawing them anyway just makes mush.
             if (cellPx > 14) {
@@ -191,7 +201,7 @@ export function ServerMap({
                 }
             }
         }
-    }, [geometry, layers.grid, layers.monuments, meta.monuments, overlay, view.scale, view.tx, view.ty, view.viewport]);
+    }, [geometry, layers.grid, layers.monuments, meta.monuments, overlay, view.content.height, view.content.width, view.scale, view.tx, view.ty, view.viewport]);
 
     const onMouseMove = useCallback((event: React.MouseEvent) => {
         const point = view.toMapSpace(event.clientX, event.clientY);
@@ -233,8 +243,8 @@ export function ServerMap({
     );
 
     const { width: vw, height: vh } = view.viewport;
-    const sx = (u: number) => u * vw * view.scale + view.tx;
-    const sy = (v: number) => v * vh * view.scale + view.ty;
+    const sx = (u: number) => u * view.content.width * view.scale + view.tx;
+    const sy = (v: number) => v * view.content.height * view.scale + view.ty;
 
     // Clicking a market row centres the map on that shop and opens its stock - the other half of the
     // list<->map coupling. Published as a command the list calls from its click handler, so there's
@@ -289,7 +299,7 @@ export function ServerMap({
                 onMouseMove={onMouseMove}
                 onMouseLeave={() => setCursorGrid(null)}
                 onContextMenu={onContextMenu}
-                className={`relative aspect-square w-full select-none overflow-hidden rounded-lg border border-border bg-canvas ${view.isPanning ? "cursor-grabbing" : "cursor-grab"}`}
+                className={`${viewportClass} ${view.isPanning ? "cursor-grabbing" : "cursor-grab"}`}
             >
                 <img
                     src={`/api/guilds/${guildId}/teams/${teamId}/servers/${serverId}/map`}
@@ -298,8 +308,12 @@ export function ServerMap({
                     style={{
                         transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`,
                         transformOrigin: "0 0",
+                        // Height from the map's own aspect rather than the measured content size, so
+                        // the image lays out correctly on the first paint, before the ResizeObserver
+                        // has reported anything. Width is 100% - content is fitted to the viewport.
+                        aspectRatio: `${meta.width} / ${meta.height}`,
                     }}
-                    className="absolute inset-0 h-full w-full object-fill"
+                    className="absolute left-0 top-0 w-full"
                 />
 
                 <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />

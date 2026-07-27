@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Zoom bounds. 1 = the whole map fitted to the viewport; below that there's no reason to go, above
- *  8x a 2000px map image is already well past its own pixel density. */
+/** Zoom bounds. 1 = the map fitted to the viewport's *width*; below that there's no reason to go,
+ *  above 8x a 2000px map image is already well past its own pixel density. */
 const MIN_SCALE = 1;
 const MAX_SCALE = 8;
 const ZOOM_STEP = 1.15;
@@ -14,8 +14,12 @@ export interface ViewTransform {
 }
 
 export interface MapView extends ViewTransform {
-    /** Size of the viewport in CSS pixels; the fitted (scale 1) size of the map content. */
+    /** Size of the viewport in CSS pixels - the visible window, which clips the content. */
     viewport: { width: number; height: number };
+    /** Size of the map content at scale 1 in CSS pixels: the viewport's width, and whatever height
+     *  the map's own aspect implies. Taller than the viewport whenever the viewport is wider than
+     *  the map is - which is the case the vertical panning exists for. */
+    content: { width: number; height: number };
     isPanning: boolean;
     reset: () => void;
     zoomBy: (factor: number) => void;
@@ -30,24 +34,41 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
+ * The translation range for one axis. When the scaled content overflows the viewport, translation
+ * may range over the overhang and no further - which is what stops the "I panned into grey space and
+ * lost the map" failure mode. When it *underflows* (the axis is shorter than the window, as height
+ * is once you zoom out), it's pinned centred rather than being allowed to drift into a corner.
+ */
+function translationRange(viewportSize: number, contentSize: number): { min: number; max: number } {
+    if (contentSize <= viewportSize) {
+        const centre = (viewportSize - contentSize) / 2;
+        return { min: centre, max: centre };
+    }
+    return { min: viewportSize - contentSize, max: 0 };
+}
+
+/**
  * Pan/zoom state for the map viewer, attached to a viewport element the caller owns.
  *
  * Works in *normalised map space* (0..1 across the image on each axis) rather than world units or
  * image pixels, so it knows nothing about Rust's projection - callers convert with mapProjection.ts.
  * That keeps the gesture handling independent of map size and image dimensions.
  *
- * The transform is `translate(tx, ty) scale(scale)` over content laid out at viewport size, and
- * translation is clamped so the image edges can never be dragged inside the viewport - which is what
- * stops the "I panned into grey space and lost the map" failure mode.
+ * The transform is `translate(tx, ty) scale(scale)` over content laid out at `content` size, which
+ * is deliberately NOT the viewport size: the content is fitted to the viewport's *width*, so a
+ * viewport shorter than the map is tall shows a horizontal band of it and pans vertically, instead
+ * of the map being squashed to fit. `contentAspect` (width/height of the map image) is what decides
+ * that height - pass it rather than assuming square.
  *
  * The viewport ref is a parameter rather than something this hook returns: bundling a ref into the
  * returned object makes every `view.something` read during render a ref access, which the React
  * compiler (rightly) rejects.
  */
-export function useMapView(viewportRef: React.RefObject<HTMLDivElement | null>): MapView {
+export function useMapView(viewportRef: React.RefObject<HTMLDivElement | null>, contentAspect = 1): MapView {
     const [transform, setTransform] = useState<ViewTransform>({ scale: 1, tx: 0, ty: 0 });
     const [viewport, setViewport] = useState({ width: 0, height: 0 });
     const [isPanning, setIsPanning] = useState(false);
+    const content = { width: viewport.width, height: viewport.width / contentAspect };
 
     // Measure the viewport so pan clamping and flyTo have real dimensions to work with.
     useEffect(() => {
@@ -61,20 +82,34 @@ export function useMapView(viewportRef: React.RefObject<HTMLDivElement | null>):
         return () => observer.disconnect();
     }, [viewportRef]);
 
-    /** Keeps the scaled content covering the viewport: at scale s the content is s times the
-     *  viewport, so translation may range over the overhang and no further. */
+    /** Clamps a transform against the viewport it is displayed in. Takes the viewport size rather
+     *  than reading state so the gesture handlers can pass a fresh getBoundingClientRect(). */
     const clampTransform = useCallback((next: ViewTransform, size: { width: number; height: number }): ViewTransform => {
         const scale = clamp(next.scale, MIN_SCALE, MAX_SCALE);
-        const overhangX = size.width * (scale - 1);
-        const overhangY = size.height * (scale - 1);
+        const x = translationRange(size.width, size.width * scale);
+        const y = translationRange(size.height, (size.width / contentAspect) * scale);
         return {
             scale,
-            tx: clamp(next.tx, -overhangX, 0),
-            ty: clamp(next.ty, -overhangY, 0),
+            tx: clamp(next.tx, x.min, x.max),
+            ty: clamp(next.ty, y.min, y.max),
         };
-    }, []);
+    }, [contentAspect]);
 
-    const reset = useCallback(() => setTransform({ scale: 1, tx: 0, ty: 0 }), []);
+    /** Fitted to width, centred on the middle of the map. Not `{1, 0, 0}`: with the content taller
+     *  than the viewport that would open hard against the map's top edge. */
+    const reset = useCallback(() => setTransform(clampTransform({
+        scale: 1,
+        tx: 0,
+        ty: (viewport.height - viewport.width / contentAspect) / 2,
+    }, viewport)), [clampTransform, contentAspect, viewport]);
+
+    // Same centring for the initial view, once the viewport has a measured size to centre within.
+    const centred = useRef(false);
+    useEffect(() => {
+        if (centred.current || viewport.width === 0) return;
+        centred.current = true;
+        reset();
+    }, [reset, viewport.width]);
 
     /** Zooms about the viewport centre - what the +/- buttons and keyboard do. */
     const zoomBy = useCallback((factor: number) => {
@@ -94,26 +129,26 @@ export function useMapView(viewportRef: React.RefObject<HTMLDivElement | null>):
 
     const flyTo = useCallback((u: number, v: number, scale = 3) => {
         const next = clamp(scale, MIN_SCALE, MAX_SCALE);
-        // Put normalised point (u,v) - which sits at (u*w*s, v*h*s) in scaled content space - under
+        // Put normalised point (u,v) - which sits at (u*cw*s, v*ch*s) in scaled content space - under
         // the centre of the viewport. Independent of the current transform, so no updater form.
         setTransform(clampTransform({
             scale: next,
-            tx: viewport.width / 2 - u * viewport.width * next,
-            ty: viewport.height / 2 - v * viewport.height * next,
+            tx: viewport.width / 2 - u * content.width * next,
+            ty: viewport.height / 2 - v * content.height * next,
         }, viewport));
-    }, [clampTransform, viewport]);
+    }, [clampTransform, content.height, content.width, viewport]);
 
     const toMapSpace = useCallback((clientX: number, clientY: number) => {
         const element = viewportRef.current;
-        if (!element || viewport.width === 0 || viewport.height === 0) return null;
+        if (!element || content.width === 0 || content.height === 0) return null;
         const rect = element.getBoundingClientRect();
         const x = clientX - rect.left;
         const y = clientY - rect.top;
         return {
-            u: (x - transform.tx) / (viewport.width * transform.scale),
-            v: (y - transform.ty) / (viewport.height * transform.scale),
+            u: (x - transform.tx) / (content.width * transform.scale),
+            v: (y - transform.ty) / (content.height * transform.scale),
         };
-    }, [transform, viewport, viewportRef]);
+    }, [content.height, content.width, transform, viewportRef]);
 
     // Wheel zoom is bound natively rather than via onWheel: React attaches passive listeners at the
     // root, which cannot call preventDefault, so a passive handler would zoom the map *and* scroll
@@ -189,5 +224,5 @@ export function useMapView(viewportRef: React.RefObject<HTMLDivElement | null>):
         };
     }, [clampTransform, viewportRef]);
 
-    return { ...transform, viewport, isPanning, reset, zoomBy, flyTo, toMapSpace };
+    return { ...transform, viewport, content, isPanning, reset, zoomBy, flyTo, toMapSpace };
 }
