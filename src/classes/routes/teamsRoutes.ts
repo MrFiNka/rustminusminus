@@ -7,7 +7,15 @@ import { getTeamsList } from "../../server/dataAccess/teams";
 import { getTeamDetail, getAddableUsers } from "../../server/dataAccess/teamDetail";
 import { getServerDetail } from "../../server/dataAccess/serverDetail";
 import { renameDevice, removeDevice } from "../../server/dataAccess/deviceActions";
-import { searchVending } from "../../server/dataAccess/vendingSearch";
+import { listMarket } from "../../server/dataAccess/vendingSearch";
+import { getMapMeta } from "../../server/dataAccess/serverMap";
+import {
+    createVendingWatch,
+    deleteVendingWatch,
+    listVendingWatches,
+    setVendingWatchEnabled,
+    type WatchInput,
+} from "../../server/dataAccess/vendingWatches";
 import { requireTeamModuleAccess } from "../../server/dataAccess/shared";
 import { getSessionDiscordId, requirePermission } from "../../permissions/web";
 import { canAddTeamMembersDirectly, canInviteTeamMembers } from "../../permissions/scopes";
@@ -123,6 +131,19 @@ export const teamsRoutes = new Elysia({ name: "teamsRoutes" })
         set.headers["Cache-Control"] = "private, max-age=300";
         return new Response(Buffer.from(mapResult), { headers: { "Content-Type": "image/jpeg" } });
     })
+    // Geometry + monuments for the interactive overlay. Shares the map image's cache entry server-
+    // side, and is wipe-stable, so it gets the same browser cache window as the image it describes.
+    .get("guilds/:guildId/teams/:teamId/servers/:serverId/map-meta", async ({ params, cookieToken, set }) => {
+        const result = await getMapMeta(
+            cookieToken as string | undefined,
+            params.guildId as string,
+            params.teamId as string,
+            params.serverId as string,
+        );
+        if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        set.headers["Cache-Control"] = "private, max-age=300";
+        return result.data;
+    })
     .post("guilds/:guildId/teams/:teamId/servers/:serverId/entities/:entityId/toggle", async ({ params, body, cookieToken, set }) => {
         const result = await requireTeamModuleAccess(
             cookieToken as string | undefined,
@@ -181,15 +202,60 @@ export const teamsRoutes = new Elysia({ name: "teamsRoutes" })
         if (!result.ok) { set.status = result.status; return { error: result.error }; }
         return { ok: true };
     })
-    .post("guilds/:guildId/teams/:teamId/servers/:serverId/vending-search", async ({ params, body, cookieToken, set }) => {
-        const query = (body as { query?: string }).query?.trim();
-        if (!query) { set.status = 400; return { error: "Search query is required" }; }
-        const result = await searchVending(
+    // The whole market in one payload - the browser filters and sorts it client-side. Replaces the
+    // old POST /vending-search, which took a query and returned pre-rendered sentences.
+    .get("guilds/:guildId/teams/:teamId/servers/:serverId/market", async ({ params, cookieToken, set }) => {
+        const result = await listMarket(
             cookieToken as string | undefined,
             params.guildId as string,
             params.teamId as string,
             params.serverId as string,
-            query,
+        );
+        if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        return result.data;
+    })
+    // Market watches. Listing is a read (team members), while create/toggle/delete are gated on
+    // `vending.watch` inside the data-access layer - creating one makes the bot post to Discord.
+    .get("guilds/:guildId/teams/:teamId/servers/:serverId/vending-watches", async ({ params, cookieToken, set }) => {
+        const result = await listVendingWatches(
+            cookieToken as string | undefined,
+            params.guildId as string,
+            params.teamId as string,
+            params.serverId as string,
+        );
+        if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        return result.data;
+    })
+    .post("guilds/:guildId/teams/:teamId/servers/:serverId/vending-watches", async ({ params, body, cookieToken, set }) => {
+        const result = await createVendingWatch(
+            cookieToken as string | undefined,
+            params.guildId as string,
+            params.teamId as string,
+            params.serverId as string,
+            body as WatchInput,
+        );
+        if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        return result.data;
+    })
+    .patch("guilds/:guildId/teams/:teamId/vending-watches/:watchId", async ({ params, body, cookieToken, set }) => {
+        const { enabled } = body as { enabled?: boolean };
+        if (typeof enabled !== "boolean") { set.status = 400; return { error: "enabled must be true or false" }; }
+        const result = await setVendingWatchEnabled(
+            cookieToken as string | undefined,
+            params.guildId as string,
+            params.teamId as string,
+            params.watchId as string,
+            enabled,
+        );
+        if (!result.ok) { set.status = result.status; return { error: result.error }; }
+        return result.data;
+    })
+    .delete("guilds/:guildId/teams/:teamId/vending-watches/:watchId", async ({ params, cookieToken, set }) => {
+        const result = await deleteVendingWatch(
+            cookieToken as string | undefined,
+            params.guildId as string,
+            params.teamId as string,
+            params.watchId as string,
         );
         if (!result.ok) { set.status = result.status; return { error: result.error }; }
         return result.data;

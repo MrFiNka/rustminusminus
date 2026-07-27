@@ -1,6 +1,6 @@
 import { GuildModel } from "../../models/Guild";
 import { ServerModel } from "../../models/Server";
-import { isTeamMemberOrAdmin } from "../../permissions/web";
+import { isTeamMemberOrAdmin, requirePermission } from "../../permissions/web";
 import { getServerSnapshot } from "../../rustplus/serverSnapshot";
 import { fail, ok, findGuildTeam, enabledTeamModuleIds } from "./shared";
 
@@ -26,6 +26,9 @@ export async function getServerDetail(cookieToken: string | undefined, guildId: 
         port: serverDb?.port ?? null,
         isActive,
         enabledModules: enabledTeamModuleIds(team),
+        // Drives whether the market panel offers watch controls. The write routes enforce this
+        // independently - this only decides what's worth showing.
+        canManageWatches: await requirePermission(cookieToken, guildId, "vending.watch", team._id),
         pairedItems: {
             smartSwitch: teamServer.pairedItems.smartSwitch.map(s => s.id),
             smartAlarm: teamServer.pairedItems.smartAlarm.map(a => a.id),

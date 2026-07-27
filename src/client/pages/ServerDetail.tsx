@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useParams, useLoaderData, useRevalidator, type LoaderFunctionArgs } from "react-router-dom";
-import { ArrowLeft, Bell, Box, Clock, Hourglass, Plug, Radar, Search, Server, Shield, Store, Users, Zap } from "lucide-react";
+import { ArrowLeft, Bell, Box, Clock, Hourglass, Map as MapIcon, Plug, Radar, Server, Shield, Store, Users, Zap } from "lucide-react";
 import { GuildSubNav } from "../components/GuildSubNav";
 import { Toggle } from "../components/Toggle";
 import { Lightbox } from "../components/Lightbox";
@@ -8,9 +8,14 @@ import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import { StatTile, statIconClass } from "../components/StatTile";
 import { SectionCard } from "../components/SectionCard";
 import { InlineRename } from "../components/InlineRename";
-import type { ServerDetailResponse, ServerSnapshot, StorageEntity, StorageItem } from "./serverDetail.types";
+import { ServerMap, type MapControls } from "../components/map/ServerMap";
+import { MarketPanel } from "../components/market/MarketPanel";
+import type { ServerDetailResponse, ServerSnapshot, StorageEntity, StorageItem, VendingMachine } from "./serverDetail.types";
 import { relativeTime, upkeepRemaining, upkeepTier, upkeepTierClass } from "./serverDetail.utils";
 import { useLiveSnapshot } from "./useLiveSnapshot";
+import { useLiveMarkers } from "./useLiveMarkers";
+import { useServerMapData } from "./useServerMapData";
+import { useVendingWatches } from "./useVendingWatches";
 
 /** Shown on a paired device Rust+ couldn't read - almost always because it was destroyed in-game
  *  or the team's active credential lost tool-cupboard auth for it. */
@@ -155,15 +160,21 @@ export function Component() {
     const data = useLoaderData() as ServerDetailResponse;
     const revalidator = useRevalidator();
     const pushedLive = useLiveSnapshot(guildId, teamId, serverId, data.isActive);
+    const liveMap = useLiveMarkers(guildId, teamId, serverId, data.isActive);
+    const hasVendingSearch = data.enabledModules.includes("vending-search");
+    const mapData = useServerMapData(guildId, teamId, serverId, hasVendingSearch);
+    const watches = useVendingWatches(guildId, teamId, serverId, hasVendingSearch);
     const [pingedLive, setPingedLive] = useState<ServerSnapshot | null>(null);
     const [pinging, setPinging] = useState(false);
     const [pingError, setPingError] = useState<string | null>(null);
     const [deviceError, setDeviceError] = useState<string | null>(null);
     const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
-    const [vendingQuery, setVendingQuery] = useState("");
-    const [vendingResults, setVendingResults] = useState<string[] | null>(null);
-    const [vendingSearching, setVendingSearching] = useState(false);
-    const [vendingError, setVendingError] = useState<string | null>(null);
+    // Lifted so the map and the market list can drive each other: hovering a listing highlights its
+    // pin, clicking a pin filters the list to that shop. Both panels live here, so this is plain
+    // shared state rather than context or router plumbing.
+    const [highlightedMachineId, setHighlightedMachineId] = useState<number | null>(null);
+    const [machineFilter, setMachineFilter] = useState<number | null>(null);
+    const mapControls = useRef<MapControls | null>(null);
 
     const ping = async () => {
         setPinging(true);
@@ -220,24 +231,28 @@ export function Component() {
         await afterDeviceMutation(res, "Failed to remove this device");
     };
 
-    const searchVending = async () => {
-        if (!vendingQuery.trim()) return;
-        setVendingSearching(true);
-        setVendingError(null);
-        const res = await fetch(`/api/guilds/${guildId}/teams/${teamId}/servers/${serverId}/vending-search`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: vendingQuery.trim() }),
-        });
-        const json = await res.json();
-        setVendingSearching(false);
-        if (!res.ok) {
-            setVendingError(json.error ?? "Search failed");
-            setVendingResults(null);
-            return;
-        }
-        setVendingResults(json.results);
-    };
+    const focusMachine = useCallback((machineId: number) => {
+        setMachineFilter(machineId);
+        mapControls.current?.focusMachine(machineId);
+    }, []);
+
+    // Indexed once so the map's popover can look a machine's stock up by marker id - the two panels
+    // share the one loaded market payload rather than fetching stock twice.
+    const machinesById = useMemo(
+        () => new Map<number, VendingMachine>((mapData.market?.machines ?? []).map(m => [m.machineId, m])),
+        [mapData.market],
+    );
+
+    // Reference point for the market's "nearest" sort: the centroid of living teammates. Null when
+    // nobody's position is known, which disables that sort rather than sorting from (0,0).
+    const teamOrigin = useMemo(() => {
+        const alive = liveMap.teamInfo?.members.filter(m => m.isAlive) ?? [];
+        if (alive.length === 0) return null;
+        return {
+            x: alive.reduce((sum, m) => sum + m.x, 0) / alive.length,
+            y: alive.reduce((sum, m) => sum + m.y, 0) / alive.length,
+        };
+    }, [liveMap.teamInfo]);
 
     if (!guildId || !teamId || !serverId) return null;
 
@@ -341,17 +356,9 @@ export function Component() {
                         )}
                         <StatTile
                             icon={
-                                <img
-                                    src={`/api/guilds/${guildId}/teams/${teamId}/servers/${serverId}/map`}
-                                    alt="Server map"
-                                    onClick={() =>
-                                        setLightbox({
-                                            src: `/api/guilds/${guildId}/teams/${teamId}/servers/${serverId}/map`,
-                                            alt: "Server map",
-                                        })
-                                    }
-                                    className="h-9 w-9 shrink-0 cursor-zoom-in rounded-lg border border-border object-cover opacity-80 transition-opacity hover:opacity-100"
-                                />
+                                <span className={statIconClass}>
+                                    <MapIcon className="h-4 w-4" />
+                                </span>
                             }
                             label="Map"
                             value={live.mapName}
@@ -475,45 +482,53 @@ export function Component() {
                         </SectionCard>
                     )}
 
-                    {hasModule("vending-search") && data.isActive && (
-                        <SectionCard icon={<Store className="h-4 w-4" />} title="Vending search">
-                            <div className="p-3">
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        value={vendingQuery}
-                                        onChange={(e) => setVendingQuery(e.target.value)}
-                                        onKeyDown={(e) => e.key === "Enter" && searchVending()}
-                                        placeholder="Search for an item…"
-                                        disabled={vendingSearching}
-                                        className="flex-1 rounded-md border border-border bg-canvas px-3 py-1.5 text-sm text-white placeholder:text-neutral-600 focus:border-accent focus:outline-none disabled:opacity-50"
-                                    />
-                                    <button
-                                        onClick={searchVending}
-                                        disabled={vendingSearching || !vendingQuery.trim()}
-                                        className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-black transition-colors hover:bg-accent-hover disabled:opacity-50"
-                                    >
-                                        <Search className="h-3.5 w-3.5" />
-                                        {vendingSearching ? "Searching…" : "Search"}
-                                    </button>
-                                </div>
-                                {vendingError && <p className="mt-2 text-xs text-red-400">{vendingError}</p>}
-                                {vendingResults &&
-                                    (vendingResults.length === 0 ? (
-                                        <p className="mt-3 text-xs text-neutral-500">No vending machines selling that item.</p>
-                                    ) : (
-                                        <ul className="mt-3 flex flex-col gap-1.5">
-                                            {vendingResults.map((line, i) => (
-                                                <li key={i} className="rounded-md bg-surface-hover px-3 py-1.5 text-xs text-neutral-300">
-                                                    {line}
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    ))}
-                            </div>
-                        </SectionCard>
-                    )}
                 </div>
             )}
+
+            {/* Map and market sit outside the `live` block deliberately: both work on any paired
+                server, not just the active one. The base image, grid and monuments come from an
+                ephemeral connection, and watches are evaluated server-side - so a non-active server
+                degrades to a static-but-zoomable map rather than showing nothing at all. */}
+            <SectionCard icon={<MapIcon className="h-4 w-4" />} title="Map">
+                {mapData.meta ? (
+                    <ServerMap
+                        guildId={guildId}
+                        teamId={teamId}
+                        serverId={serverId}
+                        meta={mapData.meta}
+                        markers={liveMap.markers}
+                        teamInfo={liveMap.teamInfo}
+                        trails={liveMap.trails}
+                        machines={machinesById}
+                        highlightedMachineId={highlightedMachineId}
+                        onSelectMachine={setMachineFilter}
+                        controlsRef={mapControls}
+                        liveUnavailable={!data.isActive}
+                    />
+                ) : (
+                    <p className="p-4 text-sm text-neutral-500">{mapData.metaError ?? "Loading the map…"}</p>
+                )}
+            </SectionCard>
+
+            {hasModule("vending-search") && (
+                <SectionCard icon={<Store className="h-4 w-4" />} title="Market" count={mapData.market?.machines.length}>
+                    <MarketPanel
+                        snapshot={mapData.market}
+                        unavailable={mapData.marketUnavailable}
+                        loading={mapData.marketLoading}
+                        error={mapData.marketError}
+                        onRefresh={mapData.refreshMarket}
+                        origin={teamOrigin}
+                        machineFilter={machineFilter}
+                        onMachineFilterChange={setMachineFilter}
+                        onHoverMachine={setHighlightedMachineId}
+                        onFocusMachine={focusMachine}
+                        watches={watches}
+                        canManageWatches={data.canManageWatches}
+                    />
+                </SectionCard>
+            )}
+
             {lightbox && <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />}
         </div>
     );

@@ -1,7 +1,8 @@
 import { SlashCommandBuilder } from "discord.js";
 import { GuildModel } from "../../models/Guild";
 import type { ModuleDiscordCommand } from "../types";
-import { searchVendingMachines } from "./search";
+import { searchInStock } from "./search";
+import { formatOrder } from "./format";
 
 export const marketCommand = {
     name: "market",
@@ -24,8 +25,8 @@ export const marketCommand = {
         const conn = team.getActiveRustPlus();
         if (!conn?.isConnected()) return await interaction.editReply({ content: "This team isn't currently connected" });
 
-        const results = await searchVendingMachines(conn, item);
+        const results = await searchInStock(conn, item);
         if (results.length === 0) return await interaction.editReply({ content: `No vending machines selling "${item}"` });
-        return await interaction.editReply({ content: results.slice(0, 15).join("\n") });
+        return await interaction.editReply({ content: results.slice(0, 15).map(formatOrder).join("\n") });
     },
 } as ModuleDiscordCommand;

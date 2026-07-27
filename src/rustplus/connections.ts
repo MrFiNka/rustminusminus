@@ -7,7 +7,7 @@ import { GuildModel } from "../models/Guild";
 import { TeamModel } from "../models/Team";
 import { registry } from "../modules/ModuleRegistry";
 import { withCache } from "../utils";
-import { applyEntityChanged, applyTeamMessage, closeLiveEntry } from "./serverSnapshot";
+import { applyEntityChanged, applyTeamInfo, applyTeamMessage, closeLiveEntry } from "./serverSnapshot";
 
 const activeConnections = new Map<string, RustPlus>(); // key: teamId.toString()
 
@@ -111,6 +111,13 @@ export async function connectTeam(
     // (not via the module dispatcher) so chat stays live even with no chat module enabled.
     rustplus.on("teamMessage", (message) => {
         applyTeamMessage(team, message);
+    });
+
+    // Push teammate positions + map notes to open map views. Same reasoning as the two above: wired
+    // off the connection rather than the module dispatcher, so the map's team layer doesn't depend on
+    // team-tracker being enabled. `trackTeam: true` above is what makes this event fire.
+    rustplus.on("teamChanged", (info) => {
+        applyTeamInfo(team, info);
     });
 
     return rustplus;

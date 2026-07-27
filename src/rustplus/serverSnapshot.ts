@@ -1,4 +1,4 @@
-import { RustPlus, AppMarkerType, type AppEntityPayload, type AppTeamMessage } from "rustminus";
+import { RustPlus, AppMarkerType, type AppEntityPayload, type AppTeamInfo, type AppTeamMessage } from "rustminus";
 import type { Types } from "mongoose";
 import type { TeamClass } from "../models/Team";
 import { ServerModel } from "../models/Server";
@@ -9,6 +9,7 @@ import { readStorageEntity, describeStoragePayload, type StorageEntity } from ".
 import { getItemCatalog } from "./itemCatalog";
 import { toGridReference } from "./gridReference";
 import { EVENT_LABELS_BY_MARKER_TYPE } from "./markerLabels";
+import { monumentLabel } from "./monumentNames";
 
 export type { StorageEntity };
 
@@ -37,6 +38,76 @@ export interface ServerSnapshot {
     activeEvents: MapEvent[];
 }
 
+/** A monument on the rendered map, at world coordinates. `label` is resolved from the raw token
+ *  Rust sends (see monumentNames.ts) so the client never has to know about tokens. */
+export interface MapMonument {
+    token: string;
+    label: string;
+    x: number;
+    y: number;
+}
+
+/**
+ * Everything the interactive map overlay needs, other than the image itself: the pixel dimensions
+ * and ocean padding that define the world->pixel transform, plus the monuments to label.
+ *
+ * All of it is wipe-stable, which is why it caches on exactly the same terms as the JPEG.
+ */
+export interface ServerMapMeta {
+    width: number;
+    height: number;
+    oceanMargin: number;
+    /** `AppInfo.mapSize`, in *world units* - a different scale from width/height, which are pixels.
+     *  Both are needed to project, and mixing them up is the classic bug here. */
+    mapSize: number;
+    monuments: MapMonument[];
+}
+
+/** The full cached `getMap()` result: the image and the metadata, fetched together. */
+interface MapPayload extends ServerMapMeta {
+    jpgImage: Uint8Array;
+}
+
+/** One map marker as pushed to browsers. Deliberately excludes `sellOrders`: that payload is large
+ *  and slow-moving, and the market panel fetches it from its own endpoint rather than paying for it
+ *  on every 30s tick. */
+export interface LiveMarker {
+    id: number;
+    type: number;
+    /** `AppMarkerType[type]` (e.g. "CargoShip"), so the client doesn't need the rustminus enum. */
+    typeName: string;
+    x: number;
+    y: number;
+    name?: string;
+    rotation?: number;
+    steamId?: string;
+    outOfStock?: boolean;
+}
+
+/** A teammate's position, from `AppTeamInfo`. Note there's no `rotation` on team members (only on
+ *  player *markers*), so these are drawn as dots rather than facing arrows. */
+export interface LiveTeamMember {
+    steamId: string;
+    name: string;
+    x: number;
+    y: number;
+    isOnline: boolean;
+    isAlive: boolean;
+}
+
+/** Team map notes, as pushed to browsers. Rust sends only a type and a position - there is no label. */
+export interface LiveMapNote {
+    type: number;
+    x: number;
+    y: number;
+}
+
+export interface LiveTeamInfo {
+    members: LiveTeamMember[];
+    mapNotes: LiveMapNote[];
+    leaderMapNotes: LiveMapNote[];
+}
+
 type TeamServer = TeamClass["servers"][number];
 type ServerMarkers = Awaited<ReturnType<RustPlus["getMapMarkers"]>>;
 
@@ -61,7 +132,10 @@ const CHAT_BUFFER_SIZE = 30;
 // Ephemeral (non-active-server) snapshots still go through this short-lived promise cache; the active
 // server instead uses the live store below, which is kept warm by websocket events.
 const snapshotCache = new Map<string, { expires: number; promise: Promise<ServerSnapshot | { error: string }> }>();
-const mapCache = new Map<string, { expires: number; promise: Promise<Uint8Array | { error: string }> }>();
+// One entry per team+server holds the whole getMap() result - image *and* metadata. They're fetched
+// by the same call and invalidated by the same event (a wipe), so splitting them into two caches
+// would mean downloading the multi-MB JPEG twice to read a handful of numbers off it.
+const mapCache = new Map<string, { expires: number; promise: Promise<MapPayload | { error: string }> }>();
 
 /** A browser (or any consumer) subscribed to live snapshot pushes for one active server. */
 export interface LiveWatcher {
@@ -85,6 +159,11 @@ interface LiveEntry {
     // Recent team chat (last CHAT_BUFFER_SIZE lines). `undefined` until seeded from getTeamChat on
     // first build; kept current afterwards by applyTeamMessage.
     chat?: ChatMessage[];
+    // Latest map markers and team info, held so a browser that connects mid-cycle gets the current
+    // state immediately instead of an empty map until the next 30s tick.
+    markers?: LiveMarker[];
+    markersFetchedAt?: number;
+    teamInfo?: LiveTeamInfo;
 }
 const liveEntries = new Map<string, LiveEntry>(); // key: teamId.toString()
 
@@ -92,6 +171,14 @@ const liveEntries = new Map<string, LiveEntry>(); // key: teamId.toString()
  *  active server's live entry is kept current by events, so this is a no-op for it. */
 export function invalidateServerSnapshot(teamId: Types.ObjectId | string, serverId: string) {
     snapshotCache.delete(`${teamId}:${serverId}`);
+}
+
+/** Clears the cached map image + metadata. Both are only valid for one wipe, and MAP_TTL_MS is far
+ *  shorter than a wipe cycle in the other direction - so without this, the first refetch after a
+ *  wipe is fine but the *detection* of the wipe never invalidates anything. Called from tickRefresh
+ *  when the server reports a new wipeTime. */
+export function invalidateServerMap(teamId: Types.ObjectId | string, serverId: string) {
+    mapCache.delete(`${teamId}:${serverId}`);
 }
 
 /**
@@ -148,7 +235,10 @@ function shapeEvents(markers: ServerMarkers, mapSize: number): MapEvent[] {
         }));
 }
 
-async function buildSnapshot(rustplus: RustPlus, server: TeamServer): Promise<ServerSnapshot> {
+async function buildSnapshot(
+    rustplus: RustPlus,
+    server: TeamServer,
+): Promise<{ snapshot: ServerSnapshot; markers: ServerMarkers }> {
     const info = await rustplus.getInfo();
 
     const [switches, alarms, storage, markers] = await Promise.all([
@@ -196,15 +286,21 @@ async function buildSnapshot(rustplus: RustPlus, server: TeamServer): Promise<Se
     ]);
 
     return {
-        players: info.players,
-        maxPlayers: info.maxPlayers,
-        queuedPlayers: info.queuedPlayers,
-        mapName: info.map,
-        wipeTime: info.wipeTime,
-        switches,
-        alarms,
-        storage,
-        activeEvents: shapeEvents(markers, info.mapSize),
+        snapshot: {
+            players: info.players,
+            maxPlayers: info.maxPlayers,
+            queuedPlayers: info.queuedPlayers,
+            mapName: info.map,
+            wipeTime: info.wipeTime,
+            switches,
+            alarms,
+            storage,
+            activeEvents: shapeEvents(markers, info.mapSize),
+        },
+        // Handed back rather than discarded so the live store can seed its marker layer from the
+        // same fetch - a browser connecting mid-cycle then gets pins immediately instead of an empty
+        // map until the next 30s tick.
+        markers,
     };
 }
 
@@ -212,13 +308,44 @@ async function buildSnapshot(rustplus: RustPlus, server: TeamServer): Promise<Se
 // Live store (active server)
 // ---------------------------------------------------------------------------
 
-/** Sends the current snapshot to every subscribed watcher. */
-function broadcast(entry: LiveEntry): void {
-    if (!entry.snapshot) return;
-    const msg = JSON.stringify({ type: "snapshot", data: entry.snapshot });
+/** Sends one already-serialised frame to every subscribed watcher. */
+function push(entry: LiveEntry, msg: string): void {
     for (const w of entry.watchers) {
         try { w.send(msg); } catch { /* dead socket - its close handler will unsubscribe it */ }
     }
+}
+
+/** Sends the current snapshot to every subscribed watcher. */
+function broadcast(entry: LiveEntry): void {
+    if (!entry.snapshot) return;
+    push(entry, JSON.stringify({ type: "snapshot", data: entry.snapshot }));
+}
+
+/** Trims a raw Rust+ marker down to what the map overlay draws. `sellOrders` is dropped on purpose -
+ *  see {@link LiveMarker}. */
+function shapeMarkers(markers: ServerMarkers): LiveMarker[] {
+    return markers.map(m => ({
+        id: m.id,
+        type: m.type,
+        typeName: AppMarkerType[m.type] ?? String(m.type),
+        x: m.x,
+        y: m.y,
+        name: m.name,
+        rotation: m.rotation,
+        steamId: m.steamId,
+        outOfStock: m.outOfStock,
+    }));
+}
+
+/** Pushes the marker layer to watchers. Called from the refresh tick with markers it already
+ *  fetched, so the map costs no additional Rust+ traffic. */
+function broadcastMarkers(entry: LiveEntry, markers: ServerMarkers): void {
+    entry.markers = shapeMarkers(markers);
+    entry.markersFetchedAt = Date.now();
+    push(entry, JSON.stringify({
+        type: "markers",
+        data: { markers: entry.markers, fetchedAt: entry.markersFetchedAt },
+    }));
 }
 
 /** Returns the active server's live snapshot, rebuilding it if the info fields have gone stale.
@@ -238,7 +365,11 @@ async function getLiveSnapshot(team: TeamClass, server: TeamServer): Promise<Ser
         const conn = await resolveConnection(team, server.serverId);
         if ("error" in conn) return conn;
         try {
-            const snapshot = await buildSnapshot(conn.rustplus, server);
+            const { snapshot, markers } = await buildSnapshot(conn.rustplus, server);
+            // Seed the marker layer from the build's own marker fetch, so a browser subscribing right
+            // after a cold build sees pins without waiting out a full refresh interval.
+            entry.markers = shapeMarkers(markers);
+            entry.markersFetchedAt = Date.now();
             // Seed the chat buffer once, over the same connection, so a browser gets recent history on
             // connect. Best-effort: a failed read leaves an empty buffer that live messages fill in.
             if (entry.chat === undefined) {
@@ -289,6 +420,11 @@ async function tickRefresh(entry: LiveEntry, teamId: string, serverId: string): 
         const info = await conn.getInfo();
         const markers = await conn.getMapMarkers().catch(() => [] as unknown as ServerMarkers);
         if (!entry.snapshot) return;
+        // A changed wipeTime means the previous map image, monuments and geometry are all stale.
+        // This tick is the only place the bot notices a wipe, so it's where the map cache is dropped -
+        // otherwise the first day after a wipe serves the old map until MAP_TTL_MS happens to lapse
+        // on an entry nobody is holding warm.
+        if (entry.snapshot.wipeTime !== info.wipeTime) invalidateServerMap(teamId, serverId);
         entry.snapshot.players = info.players;
         entry.snapshot.maxPlayers = info.maxPlayers;
         entry.snapshot.queuedPlayers = info.queuedPlayers;
@@ -297,6 +433,8 @@ async function tickRefresh(entry: LiveEntry, teamId: string, serverId: string): 
         entry.snapshot.activeEvents = shapeEvents(markers, info.mapSize);
         entry.infoExpires = Date.now() + SNAPSHOT_TTL_MS;
         broadcast(entry);
+        // Same markers, second consumer: the map overlay's live layer costs no extra Rust+ call.
+        broadcastMarkers(entry, markers);
     } catch { /* transient; retry next tick */ }
 }
 
@@ -323,6 +461,15 @@ export async function subscribeLive(team: TeamClass, serverId: string, watcher: 
     if (!("error" in snap)) watcher.send(JSON.stringify({ type: "snapshot", data: snap }));
     // Chat panels (TeamDetail) seed their history from this; device pages ignore the frame.
     watcher.send(JSON.stringify({ type: "chatHistory", data: entry.chat ?? [] }));
+    // Map layers, from whatever the store already holds - so a page load mid-cycle draws pins
+    // immediately rather than sitting empty until the next tick. Absent until the first build/tick.
+    if (entry.markers) {
+        watcher.send(JSON.stringify({
+            type: "markers",
+            data: { markers: entry.markers, fetchedAt: entry.markersFetchedAt ?? Date.now() },
+        }));
+    }
+    if (entry.teamInfo) watcher.send(JSON.stringify({ type: "teamInfo", data: entry.teamInfo }));
     startRefresh(entry, team._id.toString(), serverId);
 }
 
@@ -350,10 +497,34 @@ export function applyTeamMessage(team: TeamClass, message: AppTeamMessage): void
     if (!entry.chat) entry.chat = [];
     entry.chat.push(line);
     if (entry.chat.length > CHAT_BUFFER_SIZE) entry.chat.splice(0, entry.chat.length - CHAT_BUFFER_SIZE);
-    const msg = JSON.stringify({ type: "chat", data: line });
-    for (const w of entry.watchers) {
-        try { w.send(msg); } catch { /* dead socket - its close handler will unsubscribe it */ }
-    }
+    push(entry, JSON.stringify({ type: "chat", data: line }));
+}
+
+/**
+ * Stores and pushes teammate positions + map notes from a Rust+ `teamChanged` event, so the map's
+ * team layer follows people in real time rather than on the 30s tick.
+ *
+ * Wired directly off the connection in connectTeam - not through the module dispatcher - so the
+ * layer works regardless of which modules are enabled, mirroring applyEntityChanged/applyTeamMessage.
+ * No-op when there's no live entry (nobody has the page open).
+ */
+export function applyTeamInfo(team: TeamClass, info: AppTeamInfo): void {
+    const entry = liveEntries.get(team._id.toString());
+    if (!entry) return;
+    const note = (n: { type: number; x: number; y: number }) => ({ type: n.type, x: n.x, y: n.y });
+    entry.teamInfo = {
+        members: info.members.map(m => ({
+            steamId: m.steamId,
+            name: m.name,
+            x: m.x,
+            y: m.y,
+            isOnline: m.isOnline,
+            isAlive: m.isAlive,
+        })),
+        mapNotes: info.mapNotes.map(note),
+        leaderMapNotes: info.leaderMapNotes.map(note),
+    };
+    push(entry, JSON.stringify({ type: "teamInfo", data: entry.teamInfo }));
 }
 
 /** Patches a single device in the live snapshot from a Rust+ `entityChanged` broadcast, then pushes
@@ -484,7 +655,7 @@ export async function getServerSnapshot(team: TeamClass, serverId: string): Prom
         const conn = await resolveConnection(team, serverId);
         if ("error" in conn) return conn;
         try {
-            return await buildSnapshot(conn.rustplus, server);
+            return (await buildSnapshot(conn.rustplus, server)).snapshot;
         } catch (err) {
             // Never let a Rust+ failure bubble out as an unhandled rejection - the route handlers
             // above would turn it into a non-JSON error body (e.g. "not_found"), which the client's
@@ -496,18 +667,54 @@ export async function getServerSnapshot(team: TeamClass, serverId: string): Prom
     });
 }
 
-/** Raw JPEG map image bytes for a team's paired server - see {@link resolveConnection}. Cached for {@link MAP_TTL_MS} since the map only changes on wipe. */
-export async function getServerMap(team: TeamClass, serverId: string): Promise<Uint8Array | { error: string }> {
+/**
+ * The full map payload (image + geometry + monuments) for a team's paired server - see
+ * {@link resolveConnection}. Cached for {@link MAP_TTL_MS} since the map only changes on wipe.
+ *
+ * `getInfo()` rides along because `mapSize` lives on `AppInfo`, not `AppMap`, and the projection is
+ * useless without both. It's a cheap call and it happens once per cache miss.
+ */
+async function getMapPayload(team: TeamClass, serverId: string): Promise<MapPayload | { error: string }> {
     return withCache(mapCache, `${team._id}:${serverId}`, MAP_TTL_MS, async () => {
         const conn = await resolveConnection(team, serverId);
         if ("error" in conn) return conn;
         try {
-            const map = await conn.rustplus.getMap();
-            return map.jpgImage;
+            const [map, info] = await Promise.all([conn.rustplus.getMap(), conn.rustplus.getInfo()]);
+            return {
+                jpgImage: map.jpgImage,
+                width: map.width,
+                height: map.height,
+                oceanMargin: map.oceanMargin,
+                mapSize: info.mapSize,
+                monuments: map.monuments.map(m => ({ token: m.token, label: monumentLabel(m.token), x: m.x, y: m.y })),
+            };
         } catch {
             return { error: "Could not fetch the map" };
         } finally {
             if (conn.ephemeral) conn.rustplus.disconnect();
         }
     }, MAP_CACHE_MAX_ENTRIES);
+}
+
+/** Raw JPEG map image bytes for a team's paired server. A selector over {@link getMapPayload}, so
+ *  the image route and the metadata route share one cached fetch. */
+export async function getServerMap(team: TeamClass, serverId: string): Promise<Uint8Array | { error: string }> {
+    const payload = await getMapPayload(team, serverId);
+    return "error" in payload ? payload : payload.jpgImage;
+}
+
+/** Map geometry and monuments - everything the interactive overlay needs except the image itself.
+ *  Shares {@link getMapPayload}'s cache entry, so asking for it costs no extra Rust+ call. */
+export async function getServerMapMeta(team: TeamClass, serverId: string): Promise<ServerMapMeta | { error: string }> {
+    const payload = await getMapPayload(team, serverId);
+    if ("error" in payload) return payload;
+    // Explicitly rebuilt rather than spread-minus-image: this is a JSON response body, and picking
+    // the fields keeps a future addition to MapPayload from silently shipping to the browser.
+    return {
+        width: payload.width,
+        height: payload.height,
+        oceanMargin: payload.oceanMargin,
+        mapSize: payload.mapSize,
+        monuments: payload.monuments,
+    };
 }

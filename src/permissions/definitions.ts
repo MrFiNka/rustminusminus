@@ -5,6 +5,7 @@ export type PermissionId =
     | "alarms.manage"
     | "raidalerts.manage"
     | "storagemonitors.manage"
+    | "vending.watch"
     | "mapevents.manage"
     | "activeserver.manage"
     | "activecredential.manage"
@@ -71,6 +72,16 @@ export const PERMISSIONS: PermissionDefinition[] = [
         id: "storagemonitors.manage",
         label: "Manage storage monitors",
         description: "Rename and list paired storage monitors/tool cupboards.",
+        status: "enforced",
+        teamScoped: true,
+    },
+    // Browsing the market is open to any team member (no permission, matching /market's lack of a
+    // gate). Creating a watch is the part that needs one: it's a mutation that makes the bot post to
+    // a Discord channel on a schedule, which is a different kind of act from reading prices.
+    {
+        id: "vending.watch",
+        label: "Manage market watches",
+        description: "Create and delete saved vending-machine watches that alert in Discord.",
         status: "enforced",
         teamScoped: true,
     },
