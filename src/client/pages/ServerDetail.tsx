@@ -155,6 +155,9 @@ function StorageCardList<T extends StorageEntity>({
     );
 }
 
+/** Shared empty set, so "nothing hovered" is one stable value rather than a new set each render. */
+const NO_HIGHLIGHT: ReadonlySet<number> = new Set();
+
 export function Component() {
     const { guildId, teamId, serverId } = useParams<{ guildId: string; teamId: string; serverId: string }>();
     const data = useLoaderData() as ServerDetailResponse;
@@ -172,7 +175,7 @@ export function Component() {
     // Lifted so the map and the market list can drive each other: hovering a listing highlights its
     // pin, clicking a pin filters the list to that shop. Both panels live here, so this is plain
     // shared state rather than context or router plumbing.
-    const [highlightedMachineId, setHighlightedMachineId] = useState<number | null>(null);
+    const [highlightedMachineIds, setHighlightedMachineIds] = useState<ReadonlySet<number>>(NO_HIGHLIGHT);
     const [machineFilter, setMachineFilter] = useState<number | null>(null);
     const mapControls = useRef<MapControls | null>(null);
 
@@ -230,6 +233,10 @@ export function Component() {
         });
         await afterDeviceMutation(res, "Failed to remove this device");
     };
+
+    const highlightMachines = useCallback((machineIds: readonly number[]) => {
+        setHighlightedMachineIds(machineIds.length === 0 ? NO_HIGHLIGHT : new Set(machineIds));
+    }, []);
 
     const focusMachine = useCallback((machineId: number) => {
         setMachineFilter(machineId);
@@ -500,7 +507,7 @@ export function Component() {
                         teamInfo={liveMap.teamInfo}
                         trails={liveMap.trails}
                         machines={machinesById}
-                        highlightedMachineId={highlightedMachineId}
+                        highlightedMachineIds={highlightedMachineIds}
                         onSelectMachine={setMachineFilter}
                         controlsRef={mapControls}
                         liveUnavailable={!data.isActive}
@@ -521,7 +528,7 @@ export function Component() {
                         origin={teamOrigin}
                         machineFilter={machineFilter}
                         onMachineFilterChange={setMachineFilter}
-                        onHoverMachine={setHighlightedMachineId}
+                        onHighlightMachines={highlightMachines}
                         onFocusMachine={focusMachine}
                         watches={watches}
                         canManageWatches={data.canManageWatches}

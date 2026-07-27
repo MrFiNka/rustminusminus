@@ -40,6 +40,17 @@ export function costPerUnit(order: VendingOrder): number {
     return order.quantity > 0 ? order.costPerItem / order.quantity : order.costPerItem;
 }
 
+/** A per-unit price, kept to one decimal only where the decimal carries information. */
+export function formatUnitPrice(unitPrice: number): string {
+    return unitPrice.toFixed(unitPrice < 10 ? 1 : 0);
+}
+
+/** Price line for one order: total, and per-unit when they differ. */
+export function priceLabel(order: VendingOrder): string {
+    const base = `${order.costPerItem} ${order.currencyName}`;
+    return order.quantity > 1 ? `${base} (${formatUnitPrice(costPerUnit(order))}/ea)` : base;
+}
+
 /** True when the order is for a damaged (used) item - a weapon or tool below full condition. */
 export function isDamaged(order: VendingOrder): boolean {
     return order.itemCondition !== undefined

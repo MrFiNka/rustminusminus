@@ -37,8 +37,9 @@ export interface ServerMapProps {
     /** Machines by id, for the vending popover - the map borrows the market panel's loaded data
      *  rather than fetching stock a second time. */
     machines: Map<number, VendingMachine>;
-    /** Machine the market list is hovering, highlighted here. */
-    highlightedMachineId: number | null;
+    /** Machines the market panel is hovering, highlighted here. A set rather than one id because an
+     *  item is sold by several shops, and hovering it should ring all of them. */
+    highlightedMachineIds: ReadonlySet<number>;
     /** Fired when a pin is clicked, so the market list can filter to that machine. */
     onSelectMachine: (machineId: number | null) => void;
     /** Filled in by the map with its imperative commands, so the market list can centre the map from
@@ -75,7 +76,7 @@ export function ServerMap({
     teamInfo,
     trails,
     machines,
-    highlightedMachineId,
+    highlightedMachineIds,
     onSelectMachine,
     controlsRef,
     liveUnavailable,
@@ -383,7 +384,7 @@ export function ServerMap({
                         {visibleMarkers.map(({ marker, style }) => {
                             const { u, v } = toUnit(marker.x, marker.y, geometry);
                             const isVending = style.layer === "vending";
-                            const highlighted = isVending && marker.id === highlightedMachineId;
+                            const highlighted = isVending && highlightedMachineIds.has(marker.id);
                             return (
                                 <circle
                                     key={marker.id}

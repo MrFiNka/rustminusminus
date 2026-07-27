@@ -4,11 +4,16 @@ import type { MarketSnapshot, MarketUnavailable, VendingOrder } from "../../page
 import { relativeTime } from "../../pages/serverDetail.utils";
 import type { VendingWatches } from "../../pages/useVendingWatches";
 import { WatchList } from "./WatchList";
+import { ItemCardGrid } from "./ItemCardGrid";
+import { ItemDetailModal } from "./ItemDetailModal";
+import { buildItems, type ItemSort } from "./itemAggregation";
+import { BlueprintBadge, ConditionBadge, ItemIcon } from "./itemVisuals";
 import {
     EMPTY_FILTERS,
     buildRows,
-    costPerUnit,
+    formatUnitPrice,
     isDamaged,
+    priceLabel,
     type MarketFilters,
     type MarketSort,
 } from "./marketFilters";
@@ -16,11 +21,25 @@ import {
 const inputClass =
     "rounded-md border border-border bg-canvas px-2.5 py-1.5 text-sm text-white placeholder:text-neutral-600 focus:border-accent focus:outline-none disabled:opacity-50";
 
-const SORT_LABELS: Record<MarketSort, string> = {
+/** Stable identity for "nothing highlighted", so unhovering doesn't churn the map's props. */
+const NONE: readonly number[] = [];
+
+/** Which question the panel is answering: "who sells this?" or "what does this shop sell?". */
+type MarketView = "items" | "shops";
+
+const SHOP_SORT_LABELS: Record<MarketSort, string> = {
     cheapest: "Cheapest per unit",
     stock: "Most stock",
     nearest: "Nearest to team",
     name: "Shop name",
+};
+
+const ITEM_SORT_LABELS: Record<ItemSort, string> = {
+    shops: "Most shops",
+    cheapest: "Cheapest per unit",
+    stock: "Most stock",
+    nearest: "Nearest to team",
+    name: "Item name",
 };
 
 const UNAVAILABLE_TEXT: Record<MarketUnavailable, string> = {
@@ -41,8 +60,9 @@ export interface MarketPanelProps {
     /** Machine the map wants shown - set when a pin is clicked. */
     machineFilter: number | null;
     onMachineFilterChange: (machineId: number | null) => void;
-    /** Fired on row hover, so the matching pin can highlight. */
-    onHoverMachine: (machineId: number | null) => void;
+    /** Fired on hover, so the matching pins can highlight. Empty clears. An item is sold by several
+     *  shops, which is why this is a set rather than the one machine it used to be. */
+    onHighlightMachines: (machineIds: readonly number[]) => void;
     /** Fired on row click, so the map can fly to the shop. */
     onFocusMachine: (machineId: number) => void;
     watches: VendingWatches;
@@ -51,32 +71,16 @@ export interface MarketPanelProps {
     canManageWatches: boolean;
 }
 
-/** Price line for one order: total, and per-unit when they differ. */
-function priceLabel(order: VendingOrder): string {
-    const unit = costPerUnit(order);
-    const base = `${order.costPerItem} ${order.currencyName}`;
-    return order.quantity > 1 ? `${base} (${unit.toFixed(unit < 10 ? 1 : 0)}/ea)` : base;
-}
-
 function OrderRow({ order }: { order: VendingOrder }) {
-    const damaged = isDamaged(order);
     return (
         <li className={`flex items-center justify-between gap-3 py-1 ${order.amountInStock <= 0 ? "opacity-45" : ""}`}>
             <span className="flex min-w-0 items-center gap-1.5">
-                {order.itemShortName && (
-                    <img src={`https://cdn.carbonmod.gg/items/${order.itemShortName}.png`} alt="" className="h-4 w-4 shrink-0" />
-                )}
+                <ItemIcon shortName={order.itemShortName} />
                 <span className="truncate text-xs text-neutral-200">
                     {order.itemName} ×{order.quantity}
                 </span>
-                {order.itemIsBlueprint && (
-                    <span className="shrink-0 rounded bg-sky-500/15 px-1 py-px text-[10px] font-medium text-sky-300">BP</span>
-                )}
-                {damaged && (
-                    <span className="shrink-0 rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-300">
-                        {Math.round((order.itemCondition! / order.itemConditionMax!) * 100)}%
-                    </span>
-                )}
+                {order.itemIsBlueprint && <BlueprintBadge />}
+                {isDamaged(order) && <ConditionBadge order={order} />}
             </span>
             <span className="shrink-0 text-right text-xs">
                 <span className="text-neutral-300">{priceLabel(order)}</span>
@@ -103,32 +107,59 @@ export function MarketPanel({
     origin,
     machineFilter,
     onMachineFilterChange,
-    onHoverMachine,
+    onHighlightMachines,
     onFocusMachine,
     watches,
     canManageWatches,
 }: MarketPanelProps) {
     const [filters, setFilters] = useState<MarketFilters>(EMPTY_FILTERS);
     const [sort, setSort] = useState<MarketSort>("cheapest");
+    const [itemSort, setItemSort] = useState<ItemSort>("shops");
+    const [view, setView] = useState<MarketView>("items");
     const [expanded, setExpanded] = useState<Set<number>>(new Set());
+    const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null);
 
     const update = <K extends keyof MarketFilters>(key: K, value: MarketFilters[K]) =>
         setFilters((prev) => ({ ...prev, [key]: value }));
+
+    // Clicking a pin means "show me this shop", so a machine filter forces the shop view. Derived at
+    // render rather than pushed with a setState in an effect - the same approach ServerMap uses for
+    // its per-server layer toggles, and it leaves the chosen tab intact for when the filter clears.
+    const activeView: MarketView = machineFilter !== null ? "shops" : view;
 
     // The map owns the machine filter (clicking a pin sets it), so it's merged in here rather than
     // held in this component's own filter state.
     const effective = useMemo(() => ({ ...filters, machineId: machineFilter }), [filters, machineFilter]);
 
     const rows = useMemo(
-        () => (snapshot ? buildRows(snapshot, effective, sort, origin) : []),
-        [snapshot, effective, sort, origin],
+        () => (snapshot && activeView === "shops" ? buildRows(snapshot, effective, sort, origin) : []),
+        [snapshot, activeView, effective, sort, origin],
+    );
+
+    const items = useMemo(
+        () => (snapshot && activeView === "items" ? buildItems(snapshot, effective, itemSort, origin) : []),
+        [snapshot, activeView, effective, itemSort, origin],
     );
 
     const totalOrders = useMemo(
         () => snapshot?.machines.reduce((sum, m) => sum + m.orders.length, 0) ?? 0,
         [snapshot],
     );
-    const shownOrders = rows.reduce((sum, r) => sum + r.orders.length, 0);
+    const totalItems = useMemo(
+        () => new Set(snapshot?.machines.flatMap(m => m.orders.map(o => `${o.itemId}:${o.itemIsBlueprint}`)) ?? []).size,
+        [snapshot],
+    );
+    const shownOrders = activeView === "shops"
+        ? rows.reduce((sum, r) => sum + r.orders.length, 0)
+        : items.reduce((sum, item) => sum + item.orders.length, 0);
+
+    // Looked up by key rather than held as an object, so the open detail tracks a refreshed snapshot
+    // and closes itself if the filters stop matching the item.
+    const selectedItem = selectedItemKey === null
+        ? null
+        : items.find(item => item.key === selectedItemKey) ?? null;
+
+    const empty = activeView === "items" ? items.length === 0 : rows.length === 0;
 
     const toggle = (machineId: number) =>
         setExpanded((prev) => {
@@ -172,13 +203,27 @@ export function MarketPanel({
                     <option value="sell">Shops selling it</option>
                     <option value="buy">Shops paying in it</option>
                 </select>
-                <select value={sort} onChange={(e) => setSort(e.target.value as MarketSort)} className={inputClass}>
-                    {(Object.keys(SORT_LABELS) as MarketSort[]).map((key) => (
-                        <option key={key} value={key} disabled={key === "nearest" && !origin}>
-                            {SORT_LABELS[key]}
-                        </option>
-                    ))}
-                </select>
+                {activeView === "items" ? (
+                    <select
+                        value={itemSort}
+                        onChange={(e) => setItemSort(e.target.value as ItemSort)}
+                        className={inputClass}
+                    >
+                        {(Object.keys(ITEM_SORT_LABELS) as ItemSort[]).map((key) => (
+                            <option key={key} value={key} disabled={key === "nearest" && !origin}>
+                                {ITEM_SORT_LABELS[key]}
+                            </option>
+                        ))}
+                    </select>
+                ) : (
+                    <select value={sort} onChange={(e) => setSort(e.target.value as MarketSort)} className={inputClass}>
+                        {(Object.keys(SHOP_SORT_LABELS) as MarketSort[]).map((key) => (
+                            <option key={key} value={key} disabled={key === "nearest" && !origin}>
+                                {SHOP_SORT_LABELS[key]}
+                            </option>
+                        ))}
+                    </select>
+                )}
                 <input
                     value={filters.grid}
                     onChange={(e) => update("grid", e.target.value)}
@@ -198,6 +243,27 @@ export function MarketPanel({
             </div>
 
             <div className="flex flex-wrap items-center gap-1.5">
+                <div className="mr-1 flex rounded-full border border-border p-0.5">
+                    {([["items", "Items"], ["shops", "Shops"]] as const).map(([id, label]) => (
+                        <button
+                            key={id}
+                            onClick={() => {
+                                // Leaving the item view with a detail open would strand it behind the
+                                // shop list, so switching closes it.
+                                if (id === "shops") setSelectedItemKey(null);
+                                // A pinned shop is what forces the shop view; choosing Items means
+                                // leaving that one shop behind.
+                                if (id === "items" && machineFilter !== null) onMachineFilterChange(null);
+                                setView(id);
+                            }}
+                            className={`rounded-full px-2.5 py-0.5 text-xs transition-colors ${
+                                activeView === id ? "bg-accent/15 text-accent" : "text-neutral-500 hover:text-neutral-300"
+                            }`}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
                 {([
                     ["inStockOnly", "In stock"],
                     ["blueprintsOnly", "Blueprints"],
@@ -228,7 +294,11 @@ export function MarketPanel({
                 <div className="ml-auto flex items-center gap-2 text-xs text-neutral-500">
                     {snapshot && (
                         <span>
-                            {shownOrders} of {totalOrders} listings · updated {relativeTime(new Date(snapshot.fetchedAt).toISOString())}
+                            {activeView === "items"
+                                ? `${items.length} of ${totalItems} items`
+                                : `${shownOrders} of ${totalOrders} listings`}
+                            {" · updated "}
+                            {relativeTime(new Date(snapshot.fetchedAt).toISOString())}
                         </span>
                     )}
                     <button
@@ -246,20 +316,29 @@ export function MarketPanel({
 
             {!snapshot && loading && <p className="text-xs text-neutral-500">Loading the market…</p>}
 
-            {snapshot && rows.length === 0 && (
+            {snapshot && empty && (
                 <p className="text-xs text-neutral-500">
-                    {totalOrders === 0 ? "No vending machines found on this server." : "No listings match these filters."}
+                    {totalOrders === 0
+                        ? "No vending machines found on this server."
+                        : activeView === "items"
+                            ? "No items match these filters."
+                            : "No listings match these filters."}
                 </p>
             )}
 
+            {activeView === "items" && (
+                <ItemCardGrid items={items} onSelect={setSelectedItemKey} onHighlightMachines={onHighlightMachines} />
+            )}
+
+            {activeView === "shops" && (
             <ul className="flex flex-col divide-y divide-border/60">
                 {rows.map((row) => {
                     const open = expanded.has(row.machine.machineId);
                     return (
                         <li
                             key={row.machine.machineId}
-                            onMouseEnter={() => onHoverMachine(row.machine.machineId)}
-                            onMouseLeave={() => onHoverMachine(null)}
+                            onMouseEnter={() => onHighlightMachines([row.machine.machineId])}
+                            onMouseLeave={() => onHighlightMachines(NONE)}
                         >
                             <div className="flex items-center gap-2 py-2">
                                 <button
@@ -282,7 +361,7 @@ export function MarketPanel({
                                     {row.orders.length} listing{row.orders.length === 1 ? "" : "s"}
                                     {row.bestPrice !== null && (
                                         <span className="ml-2 text-neutral-400">
-                                            from {row.bestPrice.toFixed(row.bestPrice < 10 ? 1 : 0)}/ea
+                                            from {formatUnitPrice(row.bestPrice)}/ea
                                         </span>
                                     )}
                                 </span>
@@ -298,8 +377,30 @@ export function MarketPanel({
                     );
                 })}
             </ul>
+            )}
 
             {watchList}
+
+            {selectedItem && (
+                <ItemDetailModal
+                    item={selectedItem}
+                    origin={origin}
+                    onClose={() => setSelectedItemKey(null)}
+                    onFocusMachine={onFocusMachine}
+                    onHighlightMachines={onHighlightMachines}
+                    onWatch={canManageWatches
+                        ? () => void watches.create({
+                            query: selectedItem.name,
+                            side: "sell",
+                            maxPrice: filters.maxPrice,
+                        })
+                        : null}
+                    watched={watches.watches.some(
+                        w => w.query.trim().toLowerCase() === selectedItem.name.toLowerCase(),
+                    )}
+                    watchBusy={watches.busy}
+                />
+            )}
         </div>
     );
 }
