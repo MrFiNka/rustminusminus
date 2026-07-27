@@ -1,21 +1,26 @@
-import { GuildModel } from "../../models/Guild";
 import { registry } from "../../modules/ModuleRegistry";
 import { resolveModuleSettings, setModuleSettings } from "../../modules/moduleSettings";
-import { isTeamMemberOrAdmin } from "../../permissions/web";
+import { canManageTeamSettings } from "../../permissions/scopes";
 import { invalidateTeam } from "../../rustplus/connections";
-import { fail, ok, findGuildTeam } from "./shared";
+import { fail, ok, resolveTeamByScope } from "./shared";
 
 /** Team-scoped modules that expose at least one configurable setting - the ones the Settings page renders. */
 function configurableModules() {
     return registry.all().filter((mod) => mod.scope === "team" && (mod.settingsSchema?.length ?? 0) > 0);
 }
 
+/**
+ * Reading the settings needs the same `settings.manage` right as writing them, on purpose: the
+ * Settings tab is hidden without it (see TeamSubNav), so a hand-typed URL has to get the same answer
+ * rather than a read-only view of a page nobody was shown a link to.
+ */
+const resolveManageableTeam = (cookieToken: string | undefined, guildId: string, teamId: string) =>
+    resolveTeamByScope(cookieToken, guildId, teamId, canManageTeamSettings);
+
 export async function getTeamSettingsData(cookieToken: string | undefined, guildId: string, teamId: string) {
-    const guild = await GuildModel.findOne({ guildId });
-    if (!guild) return fail(404, "Guild not found");
-    const team = await findGuildTeam(guild, teamId);
-    if (!team) return fail(404, "Team not found");
-    if (!(await isTeamMemberOrAdmin(cookieToken, guildId, team))) return fail(401, "Not authorized");
+    const resolved = await resolveManageableTeam(cookieToken, guildId, teamId);
+    if (!resolved.ok) return resolved;
+    const team = resolved.data;
 
     const modules = configurableModules().map((mod) => ({
         id: mod.id,
@@ -35,11 +40,9 @@ export async function getTeamSettingsData(cookieToken: string | undefined, guild
 }
 
 export async function setTeamChatPrefix(cookieToken: string | undefined, guildId: string, teamId: string, chatPrefix: string) {
-    const guild = await GuildModel.findOne({ guildId });
-    if (!guild) return fail(404, "Guild not found");
-    const team = await findGuildTeam(guild, teamId);
-    if (!team) return fail(404, "Team not found");
-    if (!(await isTeamMemberOrAdmin(cookieToken, guildId, team))) return fail(401, "Not authorized");
+    const resolved = await resolveManageableTeam(cookieToken, guildId, teamId);
+    if (!resolved.ok) return resolved;
+    const team = resolved.data;
 
     const prefix = chatPrefix.trim();
     if (!prefix) return fail(400, "Prefix can't be empty");
@@ -61,11 +64,9 @@ export async function setTeamModuleSettings(
     moduleId: string,
     values: Record<string, unknown>,
 ) {
-    const guild = await GuildModel.findOne({ guildId });
-    if (!guild) return fail(404, "Guild not found");
-    const team = await findGuildTeam(guild, teamId);
-    if (!team) return fail(404, "Team not found");
-    if (!(await isTeamMemberOrAdmin(cookieToken, guildId, team))) return fail(401, "Not authorized");
+    const resolved = await resolveManageableTeam(cookieToken, guildId, teamId);
+    if (!resolved.ok) return resolved;
+    const team = resolved.data;
 
     const module = registry.get(moduleId);
     if (!module || module.scope !== "team" || !(module.settingsSchema?.length)) {

@@ -1,15 +1,20 @@
-import { GuildModel } from "../../models/Guild";
 import { registry } from "../../modules/ModuleRegistry";
-import { isTeamMemberOrAdmin } from "../../permissions/web";
-import { fail, ok } from "./shared";
-import { findGuildTeam } from "./shared";
+import { canManageTeamModules } from "../../permissions/scopes";
+import { ok, resolveTeamByScope } from "./shared";
+
+/**
+ * Listing a team's modules needs the same `modules.manage` right as toggling one: the Modules tab is
+ * hidden without it (see TeamSubNav), so reaching the URL by hand has to answer the same way. Both
+ * the loader here and the PATCH route go through this.
+ */
+export const resolveManageableModuleTeam = (cookieToken: string | undefined, guildId: string, teamId: string) =>
+    resolveTeamByScope(cookieToken, guildId, teamId, canManageTeamModules);
 
 export async function getTeamModulesData(cookieToken: string | undefined, guildId: string, teamId: string) {
-    const guild = await GuildModel.findOne({ guildId });
-    if (!guild) return fail(404, "Guild not found");
-    const team = await findGuildTeam(guild, teamId);
-    if (!team) return fail(404, "Team not found");
-    if (!(await isTeamMemberOrAdmin(cookieToken, guildId, team))) return fail(401, "Not authorized");
+    const resolved = await resolveManageableModuleTeam(cookieToken, guildId, teamId);
+    if (!resolved.ok) return resolved;
+    const team = resolved.data;
+
     const modules = registry.all()
         .filter(mod => mod.scope === "team")
         .map(mod => ({

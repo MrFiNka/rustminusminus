@@ -9,6 +9,10 @@ export interface GuildLayoutData {
     /** Team ids whose own permission groups this user may manage - shows each team's Permissions
      *  tab. Kept here rather than in the team loaders so one lookup serves every team page. */
     manageablePermissionTeamIds: string[];
+    /** Team ids whose settings this user may change - shows each team's Settings tab. */
+    manageableSettingsTeamIds: string[];
+    /** Team ids whose modules this user may enable/disable - shows each team's Modules tab. */
+    manageableModuleTeamIds: string[];
 }
 
 export async function loader({ params }: LoaderFunctionArgs): Promise<GuildLayoutData> {
@@ -20,6 +24,8 @@ export async function loader({ params }: LoaderFunctionArgs): Promise<GuildLayou
         isAdmin: !!data?.isAdmin,
         canManageGuildPermissions: !!data?.canManageGuildPermissions,
         manageablePermissionTeamIds: Array.isArray(data?.manageablePermissionTeamIds) ? data.manageablePermissionTeamIds : [],
+        manageableSettingsTeamIds: Array.isArray(data?.manageableSettingsTeamIds) ? data.manageableSettingsTeamIds : [],
+        manageableModuleTeamIds: Array.isArray(data?.manageableModuleTeamIds) ? data.manageableModuleTeamIds : [],
     };
 }
 

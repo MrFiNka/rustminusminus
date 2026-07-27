@@ -11,23 +11,29 @@ export const TeamSubNav = ({ guildId, teamId }: { guildId: string; teamId: strin
     // Read off the guild layout loader rather than each team page's own data - see
     // manageablePermissionTeamIds in dataAccess/guildLayout.ts.
     const canManagePermissions = data?.manageablePermissionTeamIds.includes(teamId) ?? false;
+    const canManageSettings = data?.manageableSettingsTeamIds.includes(teamId) ?? false;
+    const canManageModules = data?.manageableModuleTeamIds.includes(teamId) ?? false;
 
     return (
         <nav className="mb-6 flex gap-1 border-b border-border pb-4">
             <NavLink to={`/guild/${guildId}/teams/${teamId}`} end className={linkClass}>
                 Details
             </NavLink>
-            <NavLink to={`/guild/${guildId}/teams/${teamId}/modules`} className={linkClass}>
-                Modules
-            </NavLink>
+            {canManageModules && (
+                <NavLink to={`/guild/${guildId}/teams/${teamId}/modules`} className={linkClass}>
+                    Modules
+                </NavLink>
+            )}
             {canManagePermissions && (
                 <NavLink to={`/guild/${guildId}/teams/${teamId}/permissions`} className={linkClass}>
                     Permissions
                 </NavLink>
             )}
-            <NavLink to={`/guild/${guildId}/teams/${teamId}/settings`} className={linkClass}>
-                Settings
-            </NavLink>
+            {canManageSettings && (
+                <NavLink to={`/guild/${guildId}/teams/${teamId}/settings`} className={linkClass}>
+                    Settings
+                </NavLink>
+            )}
         </nav>
     );
 };

@@ -12,7 +12,8 @@ export type PermissionId =
     | "teammembers.manage"
     | "teammembers.forceadd"
     | "permissions.manage"
-    | "teampermissions.manage";
+    | "teampermissions.manage"
+    | "settings.manage";
 
 export interface PermissionDefinition {
     id: PermissionId;
@@ -35,11 +36,15 @@ export function grantablePermissions(isTeamScoped: boolean): PermissionDefinitio
 }
 
 export const PERMISSIONS: PermissionDefinition[] = [
+    // Team-scoped so it can also be granted on one team: the guild-level route resolves it WITHOUT a
+    // teamId, so a team-scoped grant only ever toggles that team's modules, while a guild-wide grant
+    // still covers the guild screen and every team.
     {
         id: "modules.manage",
         label: "Manage modules",
         description: "Enable/disable modules per guild or team.",
         status: "enforced",
+        teamScoped: true,
     },
     {
         id: "chatlinks.manage",
@@ -136,6 +141,16 @@ export const PERMISSIONS: PermissionDefinition[] = [
         id: "teampermissions.manage",
         label: "Manage team permission groups",
         description: "Create, edit and delete permission groups scoped to a single team.",
+        status: "enforced",
+        teamScoped: true,
+    },
+    // Distinct from modules.manage: that turns a module on or off, this changes how an already-enabled
+    // one behaves (plus the team's chat prefix). Being in a team is deliberately no longer enough -
+    // a module setting changes what the bot does for everyone on the team.
+    {
+        id: "settings.manage",
+        label: "Manage team settings",
+        description: "Change a team's in-game chat prefix and its enabled modules' settings.",
         status: "enforced",
         teamScoped: true,
     },

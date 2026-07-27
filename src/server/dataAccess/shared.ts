@@ -4,7 +4,7 @@ import { TeamModel, type TeamClass } from "../../models/Team";
 import { registry } from "../../modules/ModuleRegistry";
 import { PermissionGroupModel, type PermissionGroupClass } from "../../models/PermissionGroup";
 import { getWebActor, isTeamMemberOrAdmin, requirePermission } from "../../permissions/web";
-import { canManagePermissionGroup } from "../../permissions/scopes";
+import { canManagePermissionGroup, type Actor } from "../../permissions/scopes";
 import type { PermissionId } from "../../permissions/definitions";
 
 /**
@@ -50,6 +50,30 @@ export async function resolveManageablePermissionGroup(cookieToken: string | und
     const actor = await getWebActor(cookieToken, guildId);
     if (!(await canManagePermissionGroup(guildId, actor, group))) return fail(401, "Not authorized");
     return ok(group);
+}
+
+/**
+ * Resolves a team and authorizes it against one of the team-scope rules in permissions/scopes.ts.
+ * Those add the team-owner and bot-owner bypasses on top of the grant lookup, which is why this
+ * exists alongside the plain `requirePermission` path in `requireTeamModuleAccess`.
+ *
+ * The rule is a parameter because each team sub-nav tab is gated on its own permission, and the
+ * loader that renders a tab and the route that mutates from it must ask exactly the same question -
+ * otherwise a hidden tab is still reachable by typing its URL.
+ */
+export async function resolveTeamByScope(
+    cookieToken: string | undefined,
+    guildId: string,
+    teamId: string,
+    canManage: (guildId: string, actor: Actor, team: TeamClass) => Promise<boolean>,
+) {
+    const guild = await GuildModel.findOne({ guildId });
+    if (!guild) return fail(404, "Guild not found");
+    const team = await findGuildTeam(guild, teamId);
+    if (!team) return fail(404, "Team not found");
+    const actor = await getWebActor(cookieToken, guildId);
+    if (!(await canManage(guildId, actor, team))) return fail(401, "Not authorized");
+    return ok(team);
 }
 
 async function resolveGuildAndTeam(guildId: string, teamId: string) {

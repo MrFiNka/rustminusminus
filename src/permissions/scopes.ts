@@ -2,6 +2,7 @@ import { TeamModel, type TeamClass } from "../models/Team";
 import type { GuildClass } from "../models/Guild";
 import { PermissionGroupModel, type PermissionGroupClass } from "../models/PermissionGroup";
 import { resolveUserPermissions } from "./check";
+import type { PermissionId } from "./definitions";
 
 /**
  * Who is asking, resolved once by whichever surface is asking (a web session cookie in
@@ -40,16 +41,8 @@ export async function canManageGuildPermissionGroups(guildId: string, actor: Act
     return granted.has("permissions.manage");
 }
 
-/**
- * Where this user's `teampermissions.manage` grants apply, fetched in one query so the "which of
- * these teams may I manage?" case doesn't turn into a lookup per team.
- */
-async function teamPermissionGrants(guildId: string, discordUserId: string) {
-    const groups = await PermissionGroupModel.find({
-        guildId,
-        members: discordUserId,
-        permissions: "teampermissions.manage",
-    });
+/** The reach of a set of already-fetched groups that hold some grant: guild-wide, plus team ids. */
+function grantsFrom(groups: PermissionGroupClass[]) {
     return {
         /** A guild-wide group holding the grant reaches every team. */
         guildWide: groups.some(g => !g.teamId),
@@ -57,8 +50,50 @@ async function teamPermissionGrants(guildId: string, discordUserId: string) {
     };
 }
 
-function grantsReachTeam(grants: Awaited<ReturnType<typeof teamPermissionGrants>>, team: TeamClass): boolean {
+/**
+ * Where this user's `permission` grants apply, fetched in one query so the "which of these teams may
+ * I manage?" case doesn't turn into a lookup per team.
+ */
+async function teamScopedGrants(guildId: string, discordUserId: string, permission: PermissionId) {
+    return grantsFrom(await PermissionGroupModel.find({
+        guildId,
+        members: discordUserId,
+        permissions: permission,
+    }));
+}
+
+function grantsReachTeam(grants: ReturnType<typeof grantsFrom>, team: TeamClass): boolean {
     return grants.guildWide || grants.teamIds.has(team._id.toString());
+}
+
+/**
+ * The shared shape of every "may I manage this one team?" rule: guild admin, bot owner, the team's
+ * owner, or a grant of `permission` that reaches this team (guild-wide or scoped to it). Each caller
+ * below only picks the permission id.
+ */
+async function canManageTeamWith(
+    guildId: string,
+    actor: Actor,
+    team: TeamClass,
+    permission: PermissionId,
+): Promise<boolean> {
+    if (isGuildLevelOverride(actor)) return true;
+    if (!actor.discordUserId) return false;
+    if (team.isOwnedBy(actor.discordUserId)) return true;
+    return grantsReachTeam(await teamScopedGrants(guildId, actor.discordUserId, permission), team);
+}
+
+/** The list form of `canManageTeamWith`, resolved for every team in one query. */
+async function manageableTeamsWith(
+    guildId: string,
+    actor: Actor,
+    teams: TeamClass[],
+    permission: PermissionId,
+): Promise<TeamClass[]> {
+    if (isGuildLevelOverride(actor)) return teams;
+    if (!actor.discordUserId) return [];
+    const grants = await teamScopedGrants(guildId, actor.discordUserId, permission);
+    return teams.filter(t => t.isOwnedBy(actor.discordUserId) || grantsReachTeam(grants, t));
 }
 
 /**
@@ -66,10 +101,58 @@ function grantsReachTeam(grants: Awaited<ReturnType<typeof teamPermissionGrants>
  * or a `teampermissions.manage` grant that reaches this team (guild-wide or scoped to it).
  */
 export async function canManageTeamPermissionGroups(guildId: string, actor: Actor, team: TeamClass): Promise<boolean> {
-    if (isGuildLevelOverride(actor)) return true;
-    if (!actor.discordUserId) return false;
-    if (team.isOwnedBy(actor.discordUserId)) return true;
-    return grantsReachTeam(await teamPermissionGrants(guildId, actor.discordUserId), team);
+    return canManageTeamWith(guildId, actor, team, "teampermissions.manage");
+}
+
+/**
+ * May the actor change `team`'s settings - its chat prefix and its modules' settings? Same rule,
+ * keyed on `settings.manage`. Plain team membership is deliberately not enough: a module setting
+ * changes the bot's behaviour for everyone on the team.
+ */
+export async function canManageTeamSettings(guildId: string, actor: Actor, team: TeamClass): Promise<boolean> {
+    return canManageTeamWith(guildId, actor, team, "settings.manage");
+}
+
+/**
+ * May the actor enable/disable modules on `team`? Same rule, keyed on `modules.manage` - the same
+ * permission as the guild-wide Modules screen, which is why it is `teamScoped`. A guild-wide grant
+ * therefore covers every team, while a team-scoped one only toggles modules on its own team (the
+ * guild-level route resolves without a teamId, so it can never reach that far).
+ */
+export async function canManageTeamModules(guildId: string, actor: Actor, team: TeamClass): Promise<boolean> {
+    return canManageTeamWith(guildId, actor, team, "modules.manage");
+}
+
+/**
+ * The per-permission subsets of `teams` the actor may manage, for several permissions in ONE query.
+ * The guild layout needs one such list per team sub-nav tab, and a round-trip per tab over the same
+ * collection is what this avoids.
+ */
+export async function manageableTeamsByPermission<P extends PermissionId>(
+    guildId: string,
+    actor: Actor,
+    teams: TeamClass[],
+    permissions: P[],
+): Promise<Record<P, TeamClass[]>> {
+    const byPermission = {} as Record<P, TeamClass[]>;
+    const fill = (pick: (permission: P) => TeamClass[]) => {
+        for (const permission of permissions) byPermission[permission] = pick(permission);
+        return byPermission;
+    };
+
+    if (isGuildLevelOverride(actor)) return fill(() => teams);
+    const discordUserId = actor.discordUserId;
+    if (!discordUserId) return fill(() => []);
+
+    const groups = await PermissionGroupModel.find({
+        guildId,
+        members: discordUserId,
+        permissions: { $in: permissions },
+    });
+    return fill(permission => {
+        const grants = grantsFrom(groups.filter(g => g.permissions.includes(permission)));
+        return teams.filter(t => t.isOwnedBy(discordUserId) || grantsReachTeam(grants, t));
+    });
 }
 
 /** Dispatches to the guild-wide or team check based on the group's own scope. */
@@ -120,10 +203,7 @@ export async function manageablePermissionTeams(
     actor: Actor,
     teams: TeamClass[],
 ): Promise<TeamClass[]> {
-    if (isGuildLevelOverride(actor)) return teams;
-    if (!actor.discordUserId) return [];
-    const grants = await teamPermissionGrants(guildId, actor.discordUserId);
-    return teams.filter(t => t.isOwnedBy(actor.discordUserId) || grantsReachTeam(grants, t));
+    return manageableTeamsWith(guildId, actor, teams, "teampermissions.manage");
 }
 
 /**

@@ -4,9 +4,8 @@ import { requireBotOwner, requirePermission } from "../../permissions/web";
 import { getModulesData } from "../../server/dataAccess/modules";
 import { getGuildEnabledModules } from "../../server/dataAccess/guildLayout";
 import { getGlobalModulesData } from "../../server/dataAccess/globalModules";
-import { getTeamModulesData } from "../../server/dataAccess/teamModules";
+import { getTeamModulesData, resolveManageableModuleTeam } from "../../server/dataAccess/teamModules";
 import { sessionPlugin } from "./session";
-import { resolveMemberTeam } from "./shared";
 
 export const modulesRoutes = new Elysia({ name: "modulesRoutes" })
     .use(sessionPlugin)
@@ -49,7 +48,7 @@ export const modulesRoutes = new Elysia({ name: "modulesRoutes" })
         return result.data;
     })
     .patch("guilds/:guildId/teams/:teamId/modules/:moduleId", async ({ params, body, cookieToken, set }) => {
-        const access = await resolveMemberTeam(cookieToken as string | undefined, params.guildId as string, params.teamId as string);
+        const access = await resolveManageableModuleTeam(cookieToken as string | undefined, params.guildId as string, params.teamId as string);
         if (!access.ok) {
             set.status = access.status;
             return { error: access.error };

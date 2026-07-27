@@ -177,14 +177,26 @@ bypass in-game**, because a chat line carries no Discord admin context, so in-ga
 require an explicit grant and unlinked players are always denied.
 
 Current permissions: `modules.manage`, `chatlinks.manage`, `switches.toggle`, `alarms.manage`,
-`raidalerts.manage`, `storagemonitors.manage`, `activeserver.manage`, `activecredential.manage`,
-`teammembers.manage`, `teammembers.forceadd`, `permissions.manage`, `teampermissions.manage`.
+`raidalerts.manage`, `storagemonitors.manage`, `vending.watch`, `activeserver.manage`,
+`activecredential.manage`, `teammembers.manage`, `teammembers.forceadd`, `permissions.manage`,
+`teampermissions.manage`, `settings.manage`.
 They're declared in [`src/permissions/definitions.ts`](src/permissions/definitions.ts); the
 dashboard and the `/permissions` command both enumerate that list, so adding one is a single entry.
 
 A few permissions are marked guild-only and can't be put in a team-scoped group, because granting
 them within one team would still be a guild-level delegation: `permissions.manage` (guild-wide
 groups grant on *every* team) and `teammembers.forceadd` (see below).
+
+### Team Modules and Settings
+
+A team's **Modules** and **Settings** tabs are management surfaces, not member ones — being in the
+team is not enough. Modules needs `modules.manage` (the same permission as the guild-wide Modules
+screen; a team-scoped grant only reaches its own team, since the guild-level route resolves without
+a teamId) and Settings needs `settings.manage`. Bot owner, Manage Server and the team's owner hold
+both implicitly.
+
+Each tab is hidden when you lack its permission, and the loader behind it re-checks with the *same*
+rule as the mutation route, so a hidden tab isn't reachable by typing its URL.
 
 ### Team invites
 
