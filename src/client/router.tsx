@@ -1,5 +1,6 @@
 import type { LoaderFunction, RouteObject } from "react-router-dom";
 import { routeTree, buildRouteObjects } from "../routeTree";
+import * as Layout from "./layout/Layout";
 import * as Guilds from "./pages/Guilds";
 import * as GlobalModules from "./pages/GlobalModules";
 import * as GuildLayout from "./layout/GuildLayout";
@@ -15,6 +16,7 @@ import * as PermissionGroupDetail from "./pages/PermissionGroupDetail";
 import * as ChatLinks from "./pages/ChatLinks";
 
 const loaders: Partial<Record<string, LoaderFunction>> = {
+    rootLayout: Layout.loader,
     guilds: Guilds.loader,
     globalModules: GlobalModules.loader,
     guildLayout: GuildLayout.loader,

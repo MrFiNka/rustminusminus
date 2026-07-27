@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 import type { LoaderFunction, RouteObject } from "react-router-dom";
-import Layout from "./client/layout/Layout";
+import * as Layout from "./client/layout/Layout";
 import * as GuildLayout from "./client/layout/GuildLayout";
 import Home from "./client/pages/Home";
 import * as Guilds from "./client/pages/Guilds";
@@ -42,7 +42,8 @@ export interface RouteNode {
 export const routeTree: RouteNode[] = [
     {
         path: "/",
-        Component: Layout,
+        Component: Layout.Component,
+        loaderKey: "rootLayout",
         children: [
             { index: true, Component: Home },
             { path: "guilds", Component: Guilds.Component, ErrorBoundary: Guilds.ErrorBoundary, loaderKey: "guilds" },

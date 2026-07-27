@@ -2,6 +2,7 @@ import staticPlugin from "@elysiajs/static";
 import Elysia from "elysia";
 import { sessionPlugin } from "./routes/session";
 import { authRoutes } from "./routes/authRoutes";
+import { sessionRoutes } from "./routes/sessionRoutes";
 import { modulesRoutes } from "./routes/modulesRoutes";
 import { guildsRoutes } from "./routes/guildsRoutes";
 import { teamsRoutes } from "./routes/teamsRoutes";
@@ -100,6 +101,7 @@ export class WebServer extends Elysia {
                     .get("healthcheck", () => {
                         return { status: "ok" }
                     })
+                    .use(sessionRoutes)
                     .use(modulesRoutes)
                     .use(guildsRoutes)
                     .use(teamsRoutes)

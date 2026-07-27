@@ -1,5 +1,6 @@
 import type { LoaderFunction, RouteObject } from "react-router-dom";
 import { routeTree, buildRouteObjects } from "../routeTree";
+import { createRootLayoutLoader } from "./loaders/rootLayout";
 import { createGuildsLoader } from "./loaders/guilds";
 import { createGuildLayoutLoader } from "./loaders/guildLayout";
 import { createGlobalModulesLoader } from "./loaders/globalModules";
@@ -22,6 +23,7 @@ import { createChatLinksLoader } from "./loaders/chatLinks";
  */
 export function createServerRoutes(cookieToken: string | undefined): RouteObject[] {
     const loaders: Partial<Record<string, LoaderFunction>> = {
+        rootLayout: createRootLayoutLoader(cookieToken),
         guilds: createGuildsLoader(cookieToken),
         globalModules: createGlobalModulesLoader(cookieToken),
         guildLayout: createGuildLayoutLoader(cookieToken),

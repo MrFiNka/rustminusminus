@@ -1,6 +1,24 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLoaderData } from "react-router-dom";
 
 const REPO_URL = "https://github.com/realspinelle/rustminusminus";
+
+export interface RootLayoutData {
+    /** Bot owner (OWNER_DISCORD_ID) - shows the global Modules link. */
+    isBotOwner: boolean;
+}
+
+/**
+ * Session facts the app shell needs. Failures resolve to "not the owner" rather than throwing: this
+ * is the root loader, so a rejection would blank the whole app to hide one nav link, and every page
+ * it leads to re-checks server-side regardless.
+ */
+export async function loader(): Promise<RootLayoutData> {
+    const isBotOwner = await fetch("/api/session")
+        .then(res => (res.ok ? res.json() : null))
+        .then(data => !!data?.isBotOwner)
+        .catch(() => false);
+    return { isBotOwner };
+}
 
 /** Inlined because lucide-react v1 dropped its brand icons, GitHub's mark included. */
 const GithubMark = ({ className }: { className?: string }) => (
@@ -14,7 +32,9 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
         isActive ? "bg-surface text-white" : "text-neutral-400 hover:text-white"
     }`;
 
-export default function Layout() {
+export function Component() {
+    const { isBotOwner } = (useLoaderData() as RootLayoutData | undefined) ?? { isBotOwner: false };
+
     return (
         // Column layout so the footer sits at the bottom of short pages instead of mid-screen.
         <div className="flex min-h-screen flex-col bg-canvas text-neutral-200">
@@ -30,9 +50,12 @@ export default function Layout() {
                         <NavLink to="/guilds" className={navLinkClass}>
                             Guilds
                         </NavLink>
-                        <NavLink to="/modules" className={navLinkClass}>
-                            Modules
-                        </NavLink>
+                        {/* Global module defaults are bot-owner-only - the page 401s for anyone else. */}
+                        {isBotOwner && (
+                            <NavLink to="/modules" className={navLinkClass}>
+                                Modules
+                            </NavLink>
+                        )}
                     </nav>
                 </div>
             </header>
