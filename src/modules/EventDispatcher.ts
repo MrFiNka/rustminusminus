@@ -124,9 +124,9 @@ export class EventDispatcher {
         ctx: { team: TeamClass; guild: GuildClass },
         enabledModules: RustModule[],
     ): Promise<void> {
-        const markers = await rustplus.getMapMarkers();
+        const [markers, info] = await Promise.all([rustplus.getMapMarkers(), rustplus.getInfo()]);
         const previous = this.markerSnapshots.get(rustplus);
-        const events = diffMapMarkers(previous, markers);
+        const events = diffMapMarkers(previous, markers, info.mapSize);
         this.markerSnapshots.set(rustplus, markers);
 
         for (const event of events) {

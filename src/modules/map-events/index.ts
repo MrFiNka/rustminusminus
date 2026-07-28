@@ -15,6 +15,7 @@ function settingKeyForEvent(type: MapMarkerEventType): string | null {
             return "notifyCargo";
         case "patrolHelicopterSpawned":
         case "patrolHelicopterDespawned":
+        case "patrolHelicopterDowned":
             return "notifyHeli";
         case "ch47Spawned":
         case "ch47Despawned":
@@ -32,6 +33,7 @@ const EVENT_DESCRIPTIONS: Record<MapMarkerEventType, { title: string; color: num
     cargoShipDespawned: { title: "🚢 Cargo Ship has left", color: 0x99aab5 },
     patrolHelicopterSpawned: { title: "🚁 Patrol Helicopter inbound", color: 0xe67e22 },
     patrolHelicopterDespawned: { title: "🚁 Patrol Helicopter has despawned", color: 0x99aab5 },
+    patrolHelicopterDowned: { title: "🚁 Patrol Helicopter was shot down", color: 0xed4245 },
     ch47Spawned: { title: "🛩️ Chinook spotted", color: 0xe67e22 },
     ch47Despawned: { title: "🛩️ Chinook has left", color: 0x99aab5 },
     crateSpawned: { title: "📦 Locked Crate spawned", color: 0xf1c40f },
